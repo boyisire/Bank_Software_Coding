@@ -1,0 +1,323 @@
+/****************************************************************/
+/* 模块编号	：DT_Func_Db					*/
+/* 模块名称	：数据库操作处理				*/
+/* 版 本 号	：V1.0						*/
+/* 作    者	：Hu						*/
+/* 建立日期	：2015/3/6 11:32:47                             */
+/* 最后修改日期	：2015/3/6 16:13:55                             */
+/* 模块用途	：处理所有与数据库操作相关的功能              	*/
+/* 本模块中包含如下函数及功能说明：				*/
+/*	<1>.DB_Connect		连接数据库			*/
+/*	<2>.DB_Commit		接交并断开数据库		*/
+/*	<3>.DB_Rollback		回滚并断开数据库		*/
+/*	<4>.DB_IsExistTable	检测表是否在当前数据库存在	*/
+/*	<4>.DB_IsExistTabPart	检测表分区是否在当前数据库存在	*/
+/*	<5>.DB_SysDate_Count	数据库系统日期加、减N天		*/
+/*	<6>.DB_GetTabSpaceName	根据表名获取表空间表		*/
+/*	<7>.DB_SqlExec		执行动态SQL        		*/
+/*								*/
+/****************************************************************/
+/* 修改记录	：                				*/
+/* 2015/3/6 16:34:42 XXXXXXX                               	*/
+/* 2015/3/6 16:34:44 增加XXX             			*/
+/****************************************************************/
+#include "DT_Pub.h"			//C常用功能类函数
+#include "DT_Db_Pub.h"			//该文件所用到的公共类信息
+
+/*+宏定义 //SQL通迅区+*/
+EXEC SQL INCLUDE SQLCA;
+
+/*全局变量*/
+char	SysDate_Count[20];		//通过计算后所得的日期
+char 	TabSpaceName[50];		//表空间名
+
+/*+定义头文件+*/
+/**************************************************************
+ ** 函数名      : DB_Connect
+ ** 功  能      : 连接数据库
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:39:23
+ ** 最后修改日期: 2015/3/6 16:39:31
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 用户名,密码,数据库连接串
+ ** 返回值      : 0:成功  非0:失败[sqlca.sqlcode]
+***************************************************************/
+int DB_Connect(char *DB_User, char *DB_Pass, char *DB_Link)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		VARCHAR DBuser[20];
+		VARCHAR DBpass[20];
+		VARCHAR DBlink[20];
+	EXEC SQL END DECLARE SECTION;
+	
+	/*用户名*/
+	strcpy((char *)DBuser.arr, DB_User);
+	DBuser.len=strlen((char *)DBuser.arr);
+	/*密 码*/
+	strcpy((char *)DBpass.arr, DB_Pass);
+	DBpass.len=strlen((char *)DBpass.arr);
+	/*数据库*/
+	strcpy((char *)DBlink.arr, DB_Link);
+	DBlink.len=strlen((char *)DBlink.arr);
+	
+	EXEC SQL CONNECT :DBuser IDENTIFIED BY :DBpass USING :DBlink;
+		
+	return (sqlca.sqlcode);
+}
+
+
+
+/**************************************************************
+ ** 函数名      : DB_Commit
+ ** 功  能      : 断开数据库
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:39:23
+ ** 最后修改日期: 2015/3/6 16:39:31
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功  非0:失败[sqlca.sqlcode]
+***************************************************************/
+void DB_Commit()
+{
+  EXEC SQL COMMIT WORK RELEASE;
+}
+
+
+
+/**************************************************************
+ ** 函数名      : DB_Rollback
+ ** 功  能      : 回滚数据库
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:39:23
+ ** 最后修改日期: 2015/3/6 16:39:31
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功  非0:失败[sqlca.sqlcode]
+***************************************************************/
+void DB_Rollback()
+{
+  EXEC SQL ROLLBACK WORK RELEASE;
+}
+
+
+/**************************************************************
+ ** 函数名      : DB_IsExistTable
+ ** 功  能      : 检测表是否在当前数据库存在
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int DB_IsExistTable(char *DB_User, char *DB_Pass, char *DB_Link,char *DB_Table)
+{	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char TabStr[35];
+		int	 TabNum;
+	EXEC SQL END DECLARE SECTION;
+	INIT(TabStr);
+	sprintf(TabStr,"%s",DB_Table);
+	_bswTrim(TabStr);
+
+	rc=DB_Connect(DB_User,DB_Pass,DB_Link);
+	if (rc){
+		_swVdebug(0, "数据库<%s@%s>连接失败,返回值=【%d】",DB_User,DB_Link,rc);
+		return rc;
+	}else{
+		do
+		{
+			EXEC SQL select count(*) into :TabNum from USER_TABLES where TABLE_NAME=:TabStr;
+			if(sqlca.sqlcode){
+				_swVdebug(0,"TabStr=[%s] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",TabStr,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);		
+				return (sqlca.sqlcode);
+			}
+		}while(0);
+		_swVdebug(0, "数据库<%s@%s>连接成功,TABLE_NAME=【%s】 TABLE_NUM=【%d】",DB_User,DB_Link,TabStr,TabNum);
+	}
+	DB_Commit();
+	
+	return TabNum;
+}
+
+
+
+/**************************************************************
+ ** 函数名      : DB_IsExistTabPart
+ ** 功  能      : 检测表分区是否在当前数据库存在
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int DB_IsExistTabPart(char *DB_User, char *DB_Pass, char *DB_Link,char *DB_Table,char *DB_TablePart)
+{	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char 	TabStr[35];
+		char	TabPartStr[35];
+		int	TabNum;
+	EXEC SQL END DECLARE SECTION;
+	INIT(TabStr);
+	INIT(TabPartStr);
+	sprintf(TabStr,"%s",DB_Table);
+	sprintf(TabPartStr,"%s",DB_TablePart);
+	_bswTrim(TabStr);
+	_bswTrim(TabPartStr);	
+
+	rc=DB_Connect(DB_User,DB_Pass,DB_Link);
+	if (rc){
+		_swVdebug(0, "数据库<%s@%s>连接失败,返回值=【%d】",DB_User,DB_Link,rc);
+		return rc;
+	}else{
+		do
+		{
+			EXEC SQL select count(*) into :TabNum from USER_TAB_PARTITIONS where TABLE_NAME=:TabStr and PARTITION_NAME=:TabPartStr;
+			if(sqlca.sqlcode){
+				_swVdebug(0,"TabStr=[%s] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",TabStr,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);		
+				return (sqlca.sqlcode);
+			}
+		}while(0);
+		_swVdebug(0, "数据库<%s@%s>连接成功,TABLE_NAME=【%s】TABLE_PART=【%s】 TABLE_NUM=【%d】",DB_User,DB_Link,TabStr,TabPartStr,TabNum);
+	}
+	DB_Commit();
+	
+	return TabNum;
+}
+
+
+
+/**************************************************************
+ ** 函数名      : DB_SysDate_Count
+ ** 功  能      : 系统日期加、减N天(数据库)
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 输入：用户名，密码，连接串,天数(用+/-表示增/减)
+ **				  输出：SysDate_Count（全局变量）
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int DB_SysDate_Count(char *DB_User, char *DB_Pass, char *DB_Link,int DayNum)
+{	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char DB_Sysdate[20];
+		char DB_SysDate_Count[20];
+		int  DB_Num;
+	EXEC SQL END DECLARE SECTION;
+	INIT(DB_Sysdate);
+	INIT(DB_SysDate_Count);
+	INIT(SysDate_Count);	
+	DB_Num=DayNum;	
+	if (rc=DB_Connect(DB_User,DB_Pass,DB_Link))
+	{
+		_swVdebug(0, "DB_SysDate_Count:数据库<%s@%s>连接失败,返回值=【%d】",DB_User,DB_Link,rc);
+		return rc;
+	}else	{
+		do
+		{
+			EXEC SQL select to_char(sysdate+:DB_Num,'YYYYMMDD'),to_char(sysdate,'YYYYMMDD') into :DB_SysDate_Count,:DB_Sysdate from dual;
+			if(sqlca.sqlcode){
+				_swVdebug(0,"DB_SysDate_Count:获取数据库系统日期失败!  sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);		
+				return (sqlca.sqlcode);
+			}
+		}while(0);
+		_bswTrim(DB_Sysdate);
+		_bswTrim(DB_SysDate_Count);
+		memcpy(SysDate_Count,&DB_SysDate_Count,sizeof(DB_SysDate_Count));
+		_swVdebug(0, "DB_SysDate_Count:数据库<%s@%s>连接成功,当前数据库系统日期=【%s】 计算后的日期=【%s】",DB_User,DB_Link,DB_Sysdate,SysDate_Count);
+	}
+	DB_Commit();
+	
+	return SUCC;
+}
+
+/**************************************************************
+ ** 函数名      : DB_GetTabSpaceName
+ ** 功  能      : 根据表名获取表空间名
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 输入：用户名，密码，连接串，表名
+ **				  输出：TabSpaceName （全局变量）
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int DB_GetTabSpaceName(char *DB_User, char *DB_Pass, char *DB_Link,char *DB_Table)
+{	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char TabStr[35];
+		char TabSpace[35];
+	EXEC SQL END DECLARE SECTION;
+	INIT(TabStr);
+	INIT(TabSpace);
+	
+	sprintf(TabStr,"%s",DB_Table);
+	_bswTrim(TabStr);
+
+	if (rc=DB_Connect(DB_User,DB_Pass,DB_Link)){
+		_swVdebug(0, "DB_GetTabSpaceName:数据库<%s@%s>连接失败,返回值=【%d】",DB_User,DB_Link,rc);
+		return rc;
+	}else{
+		do
+		{
+			EXEC SQL select tablespace_name into :TabSpace from  user_segments where segment_name=:TabStr and rownum=1;
+			if(sqlca.sqlcode){
+				_swVdebug(0,"TabStr=[%s] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",TabStr,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);		
+				return (sqlca.sqlcode);
+			}
+		}while(0);
+		_bswTrim(TabSpace);
+		_swVdebug(0, "DB_GetTabSpaceName:数据库<%s@%s>连接成功,TABLE_NAME=【%s】 TABSPACE=【%s】",DB_User,DB_Link,TabStr,TabSpace);
+	}
+	DB_Commit();
+	
+	//全局操作，在函数外面可正常使用.
+	INIT(TabSpaceName);	//全局变量
+	strcpy(TabSpaceName,TabSpace);
+	_bswTrim(TabSpaceName);
+	return SUCC;
+}
+
+
+/**************************************************************
+ ** 函数名      : DB_SqlExec
+ ** 功  能      : 执行动态SQL
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 传入拼好的动态SQL语句大BUFF
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int DB_SqlExec(char *Buf)
+{	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char buff[500+1];
+	EXEC SQL END DECLARE SECTION;
+	INIT(buff);
+	sprintf(buff,"%s",Buf);
+	_bswTrim(buff);
+
+	//加do....while..循环，可以消除报:break错. 
+	do
+	{
+		EXEC SQL PREPARE sql_stmt FROM :buff; 
+		EXEC SQL EXECUTE sql_stmt; 
+		if(sqlca.sqlcode){
+			_swVdebug(0,"SQL=[%s] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]\n", buff, sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+			return (sqlca.sqlcode);
+		}
+	}while(0);
+	
+	return SUCC;
+}

@@ -1,0 +1,1290 @@
+/****************************************************************/
+/* 模块编号	：DB_Proc					*/
+/* 模块名称	：日终处理模块					*/
+/* 版 本 号	：V1.0						*/
+/* 作    者	：Hu						*/
+/* 建立日期	：2015/3/6 11:32:47                             */
+/* 最后修改日期	：2015/3/6 16:13:55                             */
+/* 模块用途	：处理历史日终数据移植的所有模块		*/
+/* 本模块中包含如下函数及功能说明：				*/
+/*	<1>.Proc_DayEndMain	日终模块主函数			*/
+/*	<2>.Proc_DataLoding	数据装载(处理游标)		*/
+/*	<3>.Proc_DayEnd		日终操作处理       		*/
+/*	<4>.Proc_OL_TransDetail	联机流水表处理			*/
+/*	<5>.Proc_UpdateDate	更新流水表操作日期		*/
+/*	<6>.Proc_Tab		单表模式处理			*/
+/*	<7>.Proc_Monitor	发送监控			*/
+/*								*/
+/****************************************************************/
+/* 修改记录	：                				*/
+/* 2015/3/6 16:34:42 XXXXXXX                               	*/
+/* 2015/3/6 16:34:44 增加XXX             			*/
+/****************************************************************/
+
+/*+定义头文件+*/
+#include "DT_Pub.h"
+#include "DayEnd.h"
+#include "DT_Db_Pub.h"
+
+/*+宏定义 //SQL通迅区+*/
+EXEC SQL INCLUDE SQLCA;
+EXEC SQL BEGIN DECLARE SECTION;
+/*日终信息控制表*/
+typedef struct {
+	int	Id;				//ID值
+	char	TabName[30+1];			//表英文名
+	char	TabNameDesc[30+1];		//表中文名
+	char	FromUser[30+1];			//源用户名
+	char	FromPass[30+1];			//源用户密码
+	char	FromLink[30+1];			//源数据库
+	char	ToUser[30+1];			//目标用户名
+	char	ToPass[30+1];			//目标用户密码
+	char	ToLink[30+1];			//目标数据库
+	char	OperFlag[9+1];			//操作标识
+	char	KeepDate[3+1];			//保留日期
+	char	CreateDate[3+1];		//创建日期
+	char	DateCloumn[30+1];		//日期字段
+	char	DateFormat[30+1];		//时期格式
+	int	ExtendSize;			//扩展大小
+	char	ExecShell[500+1];		//执行程序
+	char	MonFlag[1+1];			//监控开关
+	char	MonCode[4+1];			//监控代码
+	char	MonErro[10+1];			//监控代码
+	char	MonDesc[200+1];			//监控信息
+	char	Status[1+1];			//开关:0关1开
+	char	OperDate[12+1];			//操作时间
+} DayEndTab;
+
+DayEndTab ST_DayEndTab[500];	//定义全局结构体数组，用来存放游标数据.
+DayEndTab ST_DayEnd;			//定义全局结构体,用来存放单条数据.
+EXEC SQL END DECLARE SECTION;
+
+
+
+/**************************************************************
+ ** 函数名      : Proc_DayEndMain
+ ** 功  能      : 日终处理主函数
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_DayEndMain()
+{
+	int i;
+
+	_swVdebug(0, "测试开关:glTestFlag=【%d】",glTestFlag);
+	_swVdebug(0, "单表模式:glTabFlag= 【%d】",glTabFlag);
+
+	//获取Dmp文件和日志的存放路径
+	INIT(DmpFileDir);
+	if (_GetProfileString(glCfgFile, "DAYEND", "DmpFileDir", DmpFileDir) < 0)	 _swVdebug(0, "读 DmpFileDir 出错! ");
+	_swVdebug(0, "Dmp文件目录=< %s > ",DmpFileDir);
+
+	INIT(DmpLogsDir);
+	if (_GetProfileString(glCfgFile, "DAYEND", "DmpLogsDir", DmpLogsDir) < 0)	 _swVdebug(0, "读 DmpLogsDir 出错! ");
+	_swVdebug(0, "Dmp日志目录=< %s > ",DmpLogsDir);
+
+
+	if(glTabFlag)	/*****以单表方式执行日终操作*******/
+	{
+		_swVdebug(0, "以单表模式执行日终，表=[%s]",glTabName);
+		rc=Proc_Tab();
+		if(rc) {_swVdebug(0, "函数<Proc_Tab()>执行报错,单表执表失败!返回值=【%d】",rc);return rc;}
+
+	} else {	/*****以读数据库配置表方式执行日终操作***/
+
+
+		//将表CH_DAYEND_CFG中的有效数据读取到结构体数组中.
+		rc=Proc_DataLoding();
+		if(rc) {_swVdebug(0, "函数<Proc_DataLoding()>执行报错,数据装载失败!返回值=【%d】",rc);return rc;}
+
+
+		//将结构体数组的值赋给单独的结构体，以便在后面程序中固定使用.
+		for(i=0;i<RecNum;i++){
+			//初始化
+			INITS(ST_DayEnd);
+
+			ST_DayEnd.Id=ST_DayEndTab[i].Id;
+			strcpy(ST_DayEnd.TabName,ST_DayEndTab[i].TabName);
+			strcpy(ST_DayEnd.TabNameDesc,ST_DayEndTab[i].TabNameDesc);
+			strcpy(ST_DayEnd.FromUser,ST_DayEndTab[i].FromUser);
+			strcpy(ST_DayEnd.FromPass,ST_DayEndTab[i].FromPass);
+			strcpy(ST_DayEnd.FromLink,ST_DayEndTab[i].FromLink);
+			strcpy(ST_DayEnd.ToUser ,ST_DayEndTab[i].ToUser);
+			strcpy(ST_DayEnd.ToPass ,ST_DayEndTab[i].ToPass);
+			strcpy(ST_DayEnd.ToLink ,ST_DayEndTab[i].ToLink);
+			strcpy(ST_DayEnd.OperFlag,ST_DayEndTab[i].OperFlag);
+			strcpy(ST_DayEnd.KeepDate,ST_DayEndTab[i].KeepDate);
+			strcpy(ST_DayEnd.CreateDate,ST_DayEndTab[i].CreateDate);
+			strcpy(ST_DayEnd.DateCloumn,ST_DayEndTab[i].DateCloumn);
+			strcpy(ST_DayEnd.DateFormat,ST_DayEndTab[i].DateFormat);
+			ST_DayEnd.ExtendSize=ST_DayEndTab[i].ExtendSize;
+			strcpy(ST_DayEnd.ExecShell ,ST_DayEndTab[i].ExecShell);
+			strcpy(ST_DayEnd.MonFlag,ST_DayEndTab[i].MonFlag);
+			strcpy(ST_DayEnd.MonCode,ST_DayEndTab[i].MonCode);
+			strcpy(ST_DayEnd.MonErro,ST_DayEndTab[i].MonErro);
+			strcpy(ST_DayEnd.MonDesc,ST_DayEndTab[i].MonDesc);
+			strcpy(ST_DayEnd.Status ,ST_DayEndTab[i].Status);
+			strcpy(ST_DayEnd.OperDate,ST_DayEndTab[i].OperDate);
+
+			/*去空格 非字符项不用做该操作*/
+			//_bswTrim(ST_DayEnd.Id);
+			_bswTrim(ST_DayEnd.TabName);
+			_bswTrim(ST_DayEnd.TabNameDesc);
+			_bswTrim(ST_DayEnd.FromUser);
+			_bswTrim(ST_DayEnd.FromPass);
+			_bswTrim(ST_DayEnd.FromLink);
+			_bswTrim(ST_DayEnd.ToUser);
+			_bswTrim(ST_DayEnd.ToPass);
+			_bswTrim(ST_DayEnd.ToLink);
+			_bswTrim(ST_DayEnd.OperFlag);
+			_bswTrim(ST_DayEnd.KeepDate);
+			_bswTrim(ST_DayEnd.CreateDate);
+			_bswTrim(ST_DayEnd.DateCloumn);
+			_bswTrim(ST_DayEnd.DateFormat);
+			//_bswTrim(ST_DayEnd.ExtendSize);
+			_bswTrim(ST_DayEnd.ExecShell);
+			_bswTrim(ST_DayEnd.MonFlag);
+			_bswTrim(ST_DayEnd.MonCode);
+			_bswTrim(ST_DayEnd.MonErro);
+			_bswTrim(ST_DayEnd.MonDesc);
+			_bswTrim(ST_DayEnd.Status);
+			_bswTrim(ST_DayEnd.OperDate);
+
+			/*判断并处理数据库密码,如果是环境变量就取环境变量的值，否则为原值*/
+			_isEnvPasswd(ST_DayEnd.FromPass);	//源数据库密码
+			_isEnvPasswd(ST_DayEnd.ToPass);		//目标数据库密码
+
+			/*操作开始时间*/
+			Date_Begin=time(&t);
+
+			//根据不同的操作方式对表进行处理.
+			Proc_DayEnd();
+
+	     	//更新时间戳.
+	     	if (!glTestFlag){
+		     	rc=Proc_UpdateDate();
+		     	if(rc) {_swVdebug(0, "函数<Proc_UpdateDate()>执行报错戳更新失败,操作时间!返回值=【%d】",rc);}
+		     	//sleep(2);
+		}		
+		
+     		/*操作开始时间*/
+		Date_End=time(&t);
+
+	     	//发送监控
+	     	Proc_Monitor();
+
+		}
+	}
+	return SUCC;
+}
+
+
+
+/**************************************************************
+ ** 函数名      : Proc_DataLoding
+ ** 功  能      : 数据装载
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_DataLoding()
+{
+	int i;
+	char alEnvPasswd[32];
+
+	char exDb_Service_Name[100];
+	char exDb_Service_Name_A[10];
+	char exDb_Service_Name_B[10];
+	char exDb_Service_Name_H[10];
+	char exDb_Service_Name_Y[10];
+	char exDb_Service_Name_X[10];
+	char exSql_Sort[10];
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char alBuff[500+1];
+	EXEC SQL END DECLARE SECTION;
+
+
+	//初始化
+	INIT(glUserName);
+	INIT(glPassWord);
+	INIT(glTnsNames);
+	INITS(ST_DayEndTab);
+
+	INIT(exDb_Service_Name);
+	INIT(exDb_Service_Name_A);
+	INIT(exDb_Service_Name_B);
+	INIT(exDb_Service_Name_H);
+	INIT(exDb_Service_Name_Y);
+	INIT(exDb_Service_Name_X);
+	INIT(exSql_Sort);
+	INIT(alBuff);
+
+	//获取数据库用户信息
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_USERNAME", glUserName) < 0)	 _swVdebug(0, "读 DB_USERNAME 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_PASSWORD", glPassWord) < 0)	 _swVdebug(0, "读 DB_PASSWORD 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_TNSNAMES", glTnsNames) < 0)	 _swVdebug(0, "读 DB_TNSNAMES 出错! ");
+
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVICE_NAME_A", exDb_Service_Name_A) < 0)	 _swVdebug(0, "读 DB_SERVICE_NAME_A 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVICE_NAME_B", exDb_Service_Name_B) < 0)	 _swVdebug(0, "读 DB_SERVICE_NAME_B 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVICE_NAME_H", exDb_Service_Name_H) < 0)	 _swVdebug(0, "读 DB_SERVICE_NAME_H 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVICE_NAME_Y", exDb_Service_Name_Y) < 0)	 _swVdebug(0, "读 DB_SERVICE_NAME_Y 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVICE_NAME_X", exDb_Service_Name_X) < 0)	 _swVdebug(0, "读 DB_SERVICE_NAME_X 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "SQL_SORT", exSql_Sort) < 0)	 _swVdebug(0, "读 SQL_SORT 出错! ");//排序
+
+	//处理SQL排序(如果传入参数，就取参;如果没传，查配置文件是否配置，配了就直接用，没配给默认值)
+	if(strcmp(glSql_Sort,"")==0){if (exSql_Sort==NULL) {strcpy(exSql_Sort,"ASC");}} else {INIT(exSql_Sort);strcpy(exSql_Sort,glSql_Sort);}
+
+
+	/*处理数据库密码：如果第1位=$,第二位={,最后一位=}，则判定其为环境变量，直接取环境变量值，并重新赋值.*/
+	_isEnvPasswd(glPassWord);
+
+
+	/*获取数据库系统日期及清理日期.*/
+	INIT(SysDate_1);
+	rc=DB_SysDate_Count(glUserName,glPassWord,glTnsNames,-1);
+	strcpy(SysDate_1,SysDate_Count);
+	if(rc) {_swVdebug(0, "数据库清理日期获取失败!返回值=【%d】",rc);return rc;}
+
+	//printf("glDB_ServerFlag======%s\n",glDB_ServerFlag);
+
+
+	//连接数据库
+	rc=DB_Connect(glUserName,glPassWord,glTnsNames);
+	if (rc){
+		_swVdebug(0, "Proc_DataLoding:数据库<%s@%s>连接失败,返回值=【%d】",glUserName,glTnsNames,rc);
+		return rc;
+	}else{
+		_swVdebug(0, "Proc_DataLoding:数据库<%s@%s>连接成功,返回值=【%d】",glUserName,glTnsNames,rc);
+	}
+
+	//处理流水表
+	if (rc=Proc_OL_TransDetail()) _swVdebug(0, "Proc_OL_TransDetail:流水表处理失败,返回值=【%d】",rc);
+
+	if ((glDB_ServerFlag[0]=='A') || (glDB_ServerFlag[0]=='a')) {
+			sprintf(exDb_Service_Name,"AND FromLink like '%%%s%%' ORDER  BY Id %s",exDb_Service_Name_A,exSql_Sort);
+	}else if ((glDB_ServerFlag[0]=='B') || (glDB_ServerFlag[0]=='b')){
+			sprintf(exDb_Service_Name,"AND FromLink like '%%%s%%' ORDER  BY Id %s",exDb_Service_Name_B,exSql_Sort);
+	}else if ((glDB_ServerFlag[0]=='H') || (glDB_ServerFlag[0]=='h')){
+			sprintf(exDb_Service_Name,"AND FromLink like '%%%s%%' ORDER  BY Id %s",exDb_Service_Name_H,exSql_Sort);
+	}else if ((glDB_ServerFlag[0]=='Y') || (glDB_ServerFlag[0]=='Y')){
+			sprintf(exDb_Service_Name,"AND FromLink like '%%%s%%' ORDER  BY Id %s",exDb_Service_Name_Y,exSql_Sort);
+	}else if ((glDB_ServerFlag[0]=='X') || (glDB_ServerFlag[0]=='x')){
+			sprintf(exDb_Service_Name,"AND FromLink like '%%%s%%' ORDER  BY Id %s",exDb_Service_Name_X,exSql_Sort);
+	}else {
+			sprintf(exDb_Service_Name,"ORDER  BY Id %s",exSql_Sort);
+	}
+
+	sprintf(alBuff,"SELECT Id,TabName,TabNameDesc,FromUser,FromPass,FromLink,ToUser,ToPass,ToLink,OperFlag,KeepDate,CreateDate,DateCloumn,DateFormat,ExtendSize,ExecShell,MonFlag,MonCode,MonErro,MonDesc,Status,OperDate FROM ch_dayend_cfg WHERE  Status!='0' AND to_char(OperDate,'YYYYMMDD') != to_char(sysdate,'YYYYMMDD') %s",exDb_Service_Name);
+
+	_swVdebug(0, "游标<Cur_DayEnd>,Tab=[CH_DAYEND_CFG],\n\t\t\t  SQL=【%s】",alBuff);
+	//printf("alBuff======\n%s\n",alBuff);
+
+	/*==========================定义游标========================== */
+	EXEC SQL PREPARE Tmp_DayEnd FROM :alBuff;
+	EXEC SQL DECLARE Cur_DayEnd CURSOR FOR Tmp_DayEnd;
+
+	/* --静态游标时的语句.
+	EXEC SQL DECLARE Cur_DayEnd CURSOR FOR
+	    SELECT Id,TabName,TabNameDesc,FromUser,FromPass,FromLink,ToUser,ToPass,ToLink,
+	    	   OperFlag,KeepDate,CreateDate,DateCloumn,DateFormat,ExtendSize,ExecShell,MonFlag,MonCode,MonErro,MonDesc,Status,OperDate
+	      FROM ch_dayend_cfg
+	     WHERE Status!='0'
+	       AND to_char(OperDate,'YYYYMMDD')!= to_char(sysdate,'YYYYMMDD')
+	  ORDER BY Id;
+	*/
+
+ 	/* 打开游标 */
+   	EXEC SQL OPEN Cur_DayEnd;
+
+	/* break if the last row was already fetched */
+	EXEC SQL WHENEVER NOT FOUND DO break;
+ 	/* 循环取值*/
+   	for (i=0;;i++)
+   	{
+   	  INITS(ST_DayEnd);
+	      EXEC SQL FETCH Cur_DayEnd INTO
+	      		:ST_DayEndTab[i].Id,
+			:ST_DayEndTab[i].TabName,
+			:ST_DayEndTab[i].TabNameDesc,
+			:ST_DayEndTab[i].FromUser,
+			:ST_DayEndTab[i].FromPass,
+			:ST_DayEndTab[i].FromLink,
+			:ST_DayEndTab[i].ToUser,
+			:ST_DayEndTab[i].ToPass,
+			:ST_DayEndTab[i].ToLink,
+			:ST_DayEndTab[i].OperFlag,
+			:ST_DayEndTab[i].KeepDate,
+			:ST_DayEndTab[i].CreateDate,
+			:ST_DayEndTab[i].DateCloumn,
+			:ST_DayEndTab[i].DateFormat,
+			:ST_DayEndTab[i].ExtendSize,
+			:ST_DayEndTab[i].ExecShell,
+			:ST_DayEndTab[i].MonFlag,
+			:ST_DayEndTab[i].MonCode,
+			:ST_DayEndTab[i].MonErro,
+			:ST_DayEndTab[i].MonDesc,
+			:ST_DayEndTab[i].Status,
+			:ST_DayEndTab[i].OperDate;
+
+
+	     if (sqlca.sqlcode) {
+	     	_swVdebug(0, "DayEndTab.ID=[%d],sqlinfo=[%d][%s]",ST_DayEndTab[i].Id,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+			EXEC SQL ROLLBACK WORK RELEASE;
+			return sqlca.sqlcode;
+		 }
+//		printf("Pro_DataLoading:id=[%d],name=[%s],sqlinfo=[%d][%s]\n",ST_DayEndTab[i].Id,ST_DayEnd.TabName,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+		RecNum++;
+	}
+
+	_swVdebug(0, "本次共装载了[%d]条记录.",RecNum);
+
+	/* 关闭游标 并断开数据库*/
+	EXEC SQL CLOSE Cur_DayEnd;
+	DB_Commit();
+
+	return SUCC;
+}
+
+
+/**************************************************************
+ ** 函数名      : Proc_DayEnd
+ ** 功  能      : 处理主函数
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : 日终表结构体
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+void Proc_DayEnd()
+{
+	int i,ErroNum=0;
+	int  Ret1=0,Ret2=0,Ret3=0;		//临时数值变量1、2、3
+	char StrBuf1[200];			//临时字串1
+	char StrBuf2[200];			//临时字串2
+	char StrBuf3[200];			//临时字串3
+	char alTmpTab1[32];			//临时表名1
+	char alTmpTab2[32];			//临时表名2
+	
+	int  CpuCount=EXPDP_CPUNUM;		//执行EXPDP或者IMPDP时，CPU个数.
+	INIT(MonCodeStr);
+	_swVdebug(0, "\n");
+	_swVdebug(0, "<Proc_DayEndMain>正在处理:记录ID=[%d],表名=[%s],数据来源中心=[%s],处理方式=[%s]",ST_DayEnd.Id,ST_DayEnd.TabName,ST_DayEnd.FromLink,ST_DayEnd.OperFlag);
+
+	//循环处理标识位，OPERFLAG_LEN=9，指共9位，每位分别代表不同的操作
+	for(i=0;i<OPERFLAG_LEN;i++){
+	 	INIT(StrBuf);				//初始化字符串大Buf
+	 	INIT(StrBuf1);				//初始化临时字串Buf1
+	 	INIT(StrBuf2);				//初始化临时字串Buf2
+	 	INIT(StrBuf3);				//初始化临时字串Buf3
+	 	INIT(alTmpTab1);			//初始化临时表名1
+	 	INIT(alTmpTab2);			//初始化临时表名2
+	 	INIT(TabNameTmp);			//初始化临时表名
+	 	Ret=-888; 				//将返回值初始化为-888,如果什么都不做的时候，就打印该值
+	 	switch (i){
+	 		/*数据表导出*/
+	 		case 0:
+	 				switch (ST_DayEnd.OperFlag[i]){
+	 					/*数据表导出:EXP方式-全表导出*/
+	 					case '1':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s/%s.%s.%s.dmp",DmpFileDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"%s/EXP.%s.%s.%s.log",DmpLogsDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//EXP方式导出语句 整全
+	 						sprintf(StrBuf, "exp %s/%s@%s file=%s log=%s feedback=10000 buffer=409600 tables=%s",ST_DayEnd.FromUser, ST_DayEnd.FromPass, ST_DayEnd.FromLink,DmpFile,DmpLogs,ST_DayEnd.TabName);
+	 						break;
+	 					/*数据表导出:EXP方式-按WHERE条件导出*/
+	 					case '2':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s/%s.%s.%s.dmp",DmpFileDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"%s/EXP.%s.%s.%s.log",DmpLogsDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//EXP方式导出语句  WHERE TRANSDATE='YYYYMMDD''
+	 						sprintf(StrBuf, "exp %s/%s@%s file=%s log=%s feedback=10000 buffer=409600  indexes=n tables=%s query=\'\"where %s\=\'%s\'\"\'",ST_DayEnd.FromUser, ST_DayEnd.FromPass, ST_DayEnd.FromLink,DmpFile,DmpLogs,ST_DayEnd.TabName,ST_DayEnd.DateCloumn,SysDate_1);
+	 						break;
+	 					/*数据表导出:EXP方式-按分区导出*/
+	 					case '3':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s/%s.%s.%s.dmp",DmpFileDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"%s/EXP.%s.%s.%s.log",DmpLogsDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//EXP方式导出语句  TABLES=TableName:PartitionName
+	 						sprintf(StrBuf, "exp %s/%s@%s file=%s log=%s feedback=10000 buffer=409600  indexes=n tables=%s:P%s",ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,DmpFile,DmpLogs,ST_DayEnd.TabName,SysDate_1);
+	 						break;
+	 					/*数据表导出:EXPDP方式--全表*/
+	 					case '4':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s.%s.%s.dmp",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"EXPDP.%s.%s.%s.log",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//EXPDP方式导出语句
+	 						//sprintf(buff, "expdp %s/%s@%s tables=%s dumpfile=%s_%U.dmp DIRECTORY=dumpdir logfile=%s parallel=%d CONTENT=DATA_ONLY", FromUser, FromPasswd, FromName, Tab_Name, FileName, LogName, CpuCount);
+	 						sprintf(StrBuf, "expdp %s/%s@%s tables=%s dumpfile=%s DIRECTORY=dumpdir logfile=%s parallel=%d CONTENT=DATA_ONLY", ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName,DmpFile,DmpLogs,CpuCount);
+	 						break;
+	 					/*数据表导出:EXPDP方式--按WHERE条件+日期*/
+	 					case '5':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s.%s.%s.dmp",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"EXPDP.%s.%s.%s.log",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//EXPDP方式导出语句
+	 						//sprintf(buff, "expdp %s/%s@%s tables=%s dumpfile=%s_%U.dmp DIRECTORY=dumpdir logfile=%s  CONTENT=DATA_ONLY parallel=%d", FromUser, FromPasswd, FromName, Tab_Name, FileName, LogName, Datecol, cDateTo, CpuCount);
+	 						sprintf(StrBuf, "expdp %s/%s@%s tables=%s dumpfile=%s DIRECTORY=dumpdir logfile=%s parallel=%d query='\"where %s\=\'%s\'\"' CONTENT=DATA_ONLY ", ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName,DmpFile,DmpLogs,CpuCount,ST_DayEnd.DateCloumn,SysDate_1);
+	 						break;
+	 					/*数据表导出:EXPDP方式--按分区导*/
+	 					case '6':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s.%s.%s.dmp",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"EXPDP.%s.%s.%s.log",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//EXPDP方式导出语句
+	 						//sprintf(buff, "expdp %s/%s@%s tables=%s:p%s dumpfile=%s_%U.dmp DIRECTORY=dumpdir logfile=%s parallel=%d CONTENT=DATA_ONLY", FromUser, FromPasswd, FromName, Tab_Name, cDateTo, FileName, LogName, CpuCount);
+	 						sprintf(StrBuf, "expdp %s/%s@%s tables=%s:p%s dumpfile=%s DIRECTORY=dumpdir logfile=%s parallel=%d  CONTENT=DATA_ONLY", ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName,SysDate_1,DmpFile,DmpLogs,CpuCount);
+	 						break;
+	 					/*数据表导出:SQLPLUS方式*/
+	 					case '9':
+	 						/*逗逼注意！此处有雷！哈哈~~~~*/
+	 						sprintf(StrBuf, "echo '=======SQLPLUS+SPOOL[待开发模块]======'\n");
+	 						break;
+	 					default:
+	 						MonCodeStr[i]='0';	//赋值用作监控代码
+	 						continue;
+	 				}
+	 				if (!glTestFlag){
+	 					if (exists(DmpFile)) {
+	 						Ret=_SystemExec(StrBuf);		//如果文件不存在就执行导出，如果存在就跳过.
+	 						_swVdebug(0, "数据表导出[%c],Ret=【%d】 StrBuf=【%s】\n",ST_DayEnd.OperFlag[i],Ret,StrBuf);
+	 						if (ST_DayEnd.OperFlag[i]=='4' || ST_DayEnd.OperFlag[i]=='5' || ST_DayEnd.OperFlag[i]=='6'){
+	 							Ret=Proc_GetExpdpFile();	//从数据库服务器下载文件后，并删除服务器上的文件.
+	 						}
+	 					}else{
+	 						Ret=0;					//如果文件存在，证明不需要做操作，该步默认其执行成功.
+	 					}	 					
+	 				}else{
+	 					_swVdebug(0, "数据表导出[%c],Ret=【%d】 StrBuf=【%s】\n",ST_DayEnd.OperFlag[i],Ret,StrBuf);
+	 				}
+	 				if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码	 				
+	 				break;
+
+	 		/*数据表导入*/
+	 		case 1:
+	 				switch (ST_DayEnd.OperFlag[i]){
+	 					/*数据表导入:IMP方式*/
+	 					case '1':
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"%s/IMP.%s.%s.%s.log",DmpLogsDir,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//IMP方式导出语句
+	 						rc=DB_IsExistTable(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,ST_DayEnd.TabName);
+	 						if(rc) _swVdebug(0,"DB_IsExistTable:rc=<%d>",rc);
+	 						if (rc){
+	 							//oralce 11g以上版本才支持data_only=y 参数.它与ignore参数只能选其一.
+	 							//sprintf(StrBuf, "imp %s/%s@%s file=%s log=%s feedback=10000 buffer=409600 tables=%s data_only=y",ST_DayEnd.ToUser,ST_DayEnd.ToPass, ST_DayEnd.ToLink,DmpFile,DmpLogs,ST_DayEnd.TabName);
+	 							sprintf(StrBuf, "imp %s/%s@%s file=%s log=%s feedback=10000 buffer=409600 tables=%s indexes=n constraints=N data_only=y",ST_DayEnd.ToUser,ST_DayEnd.ToPass, ST_DayEnd.ToLink,DmpFile,DmpLogs,ST_DayEnd.TabName);
+	 						}else{
+	 							sprintf(StrBuf, "imp %s/%s@%s file=%s log=%s feedback=10000 buffer=409600 tables=%s indexes=n constraints=N ignore=y",ST_DayEnd.ToUser,ST_DayEnd.ToPass, ST_DayEnd.ToLink,DmpFile,DmpLogs,ST_DayEnd.TabName);
+	 						}
+	 						break;
+	 					/*数据表导入:IMPDP方式*/
+	 					case '2':
+	 						//Dmp数据文件
+	 						INIT(DmpFile);
+	 						sprintf(DmpFile,"%s.%s.%s.dmp",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	 						//Dmp日志文件
+	 						INIT(DmpLogs);
+	 						sprintf(DmpLogs,"IMPDP.%s.%s.%s.log",ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+	 						//单独对OL_TRANSDEATIL表名进行处理.
+							if (strcmp(ST_DayEnd.TabName,"OL_TRANSDETAIL_0")==0 || strcmp(ST_DayEnd.TabName,"OL_TRANSDETAIL_1")==0  || strcmp(ST_DayEnd.TabName,"OL_TRANSDETAIL_2")==0 ){
+								strcpy(TabNameTmp,"OL_TRANSDETAIL");
+							}else{
+								strcpy(TabNameTmp,ST_DayEnd.TabName);
+							}
+	 						//IMPDP方式导出语句
+	 						//实例：impdp chhis/chhis@ahisdbs tables=chmap.OL_TRANSDETAIL_1 REMAP_SCHEMA=chmap:chhis REMAP_TABLE=OL_TRANSD<img src="" />ETAIL_1:OL_TRANSDETAIL_20150314 dumpfile=boldbs1_OL_TRANSDETAIL_1.20150316_%U.dmp DIRECTORY=dumpdir logfile=impdp_boldbs1_OL_TRANSDETAIL_1.20150316.log parallel=1 cluster=N]
+	 						sprintf(StrBuf, "impdp %s/%s@%s tables=%s.%s REMAP_SCHEMA=%s:%s REMAP_TABLE=%s:%s_%s dumpfile=%s DIRECTORY=dumpdir logfile=%s parallel=%d cluster=N",ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,ST_DayEnd.FromUser,ST_DayEnd.TabName,ST_DayEnd.FromUser,ST_DayEnd.ToUser,ST_DayEnd.TabName,TabNameTmp,SysDate_1,DmpFile,DmpLogs,CpuCount);
+							break;
+	 					/*数据表导入:SQLLDR方式*/
+	 					case '9':
+	 						//sprintf(StrBuf, "Imp %s/%s@%s tables=%s FEEDBACK=10000 file=aaa log=bbb\n",ST_DayEnd.FromUser, ST_DayEnd.FromPass, ST_DayEnd.FromLink, ST_DayEnd.TabName);
+							sprintf(StrBuf, "echo '=======SQLLDER======'\n");
+	 						break;
+	 					default:
+	 						MonCodeStr[i]='0';	//赋值用作监控代码
+	 						continue;
+	 				}
+	 				if (!glTestFlag){
+	 					Ret=_SystemExec(StrBuf);
+	 					if (ST_DayEnd.OperFlag[i]=='2'){
+	 							Ret=Proc_MvImpdpFile();	//将文件由数据库目录移动到程序主目录
+	 					}
+	 				}
+	 				if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码
+	 				_swVdebug(0, "数据表导入[%c],Ret=【%d】 StrBuf=【%s】\n",ST_DayEnd.OperFlag[i],Ret,StrBuf);
+
+	 				break;
+
+	 		/*数据表清理*/
+	 		case 2:
+	 				switch (ST_DayEnd.OperFlag[i]){
+	 					/*数据表清理:按<Delete+日期>的方式删除来源表数据*/
+	 					case '1':
+	 						//获取要删除N天之前的日期
+							DayNum=-atoi(ST_DayEnd.KeepDate);
+							DB_SysDate_Count(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,DayNum);
+	 						sprintf(StrBuf,"delete from %s where %s='%s'",ST_DayEnd.TabName,ST_DayEnd.DateCloumn,SysDate_Count);
+	 						break;
+	 					/*数据表清理:按<Drop+分区>的方式删除来源表数据*/
+	 					case '2':
+	 						//获取要删除N天之前的日期
+							DayNum=-atoi(ST_DayEnd.KeepDate);
+							DB_SysDate_Count(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,DayNum);
+	 						sprintf(StrBuf, "ALTER TABLE %s DROP PARTITION P%s UPDATE indexes\n",ST_DayEnd.TabName,SysDate_Count); //drop 表分区
+	 						break;
+	 					/*数据表清理:按<Truncate+表名>的方式删除来源表数据*/
+	 					case '3':
+	 						sprintf(StrBuf, "TRUNCATE TABLE %s",ST_DayEnd.TabName); //truncate清空表
+	 						break;
+	 					/*数据表清理:按<Delete+日期>的方式删除目标表数据*/
+	 					case '4':
+	 						//获取要删除三年之前的日期
+							DayNum=-1000;
+							DB_SysDate_Count(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,DayNum);
+	 						sprintf(StrBuf,"DELETE FROM %s WHERE %s='%s'",ST_DayEnd.TabName,ST_DayEnd.DateCloumn,SysDate_Count);
+	 						break;
+	 					/*数据表清理:按<Drop+分区>的方式删除目标表数据*/
+	 					case '5':
+	 						//获取要删除三年之前的日期
+							DayNum=-1000;
+							DB_SysDate_Count(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,DayNum);
+	 						sprintf(StrBuf, "ALTER TABLE %s DROP PARTITION P%s UPDATE indexes\n",ST_DayEnd.TabName,SysDate_Count); //drop 表分区
+	 						break;
+	 					/*数据表清理:按<Truncate+表名>的方式删除目标表数据*/
+	 					case '6':
+	 						sprintf(StrBuf, "TRUNCATE TABLE %s",ST_DayEnd.TabName); //truncate清空表
+	 						break;
+	 					default:
+	 						MonCodeStr[i]='0';	//赋值用作监控代码
+	 						continue;
+	 				}
+	 				//如果标识为1，2，3时，处理来源数据库，其它时处理目标数据库.
+					if (ST_DayEnd.OperFlag[i]=='1' || ST_DayEnd.OperFlag[i]=='2' || ST_DayEnd.OperFlag[i]=='3'){
+						rc=DB_Connect(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink);
+						if(rc) _swVdebug(0,"DB_IsExistTable:rc=<%d>",rc);
+					}else{
+						rc=DB_Connect(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink);
+						if(rc) _swVdebug(0,"DB_IsExistTable:rc=<%d>",rc);
+					}
+	 				//Ret=DB_Connect(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink);
+	 				if (!glTestFlag){
+	 					if(!(Ret=DB_SqlExec(StrBuf))){DB_Commit();}else{DB_Rollback();}
+	 				}
+	 				if (Ret==0 || Ret==1403){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码
+		 			_swVdebug(0, "数据表清理[%c],Ret=【%d】 StrBuf=【%s】",ST_DayEnd.OperFlag[i],Ret,StrBuf);
+					break;
+
+	 		/*数据表修改*/
+	 		case 3:
+	 				//单独对OL_TRANSDEATIL表名进行处理.
+					if (strcmp(ST_DayEnd.TabName,"OL_TRANSDETAIL_0")==0 || strcmp(ST_DayEnd.TabName,"OL_TRANSDETAIL_1")==0  || strcmp(ST_DayEnd.TabName,"OL_TRANSDETAIL_2")==0 ){
+						strcpy(TabNameTmp,"OL_TRANSDETAIL");
+					}else{
+						strcpy(TabNameTmp,ST_DayEnd.TabName);
+					}
+
+	 				switch (ST_DayEnd.OperFlag[i]){
+	 					/*数据表修改--单中心导数:用Rename方式将目标表改为：表名+日期*/
+	 					case '1':	 						
+	 						sprintf(StrBuf, "RENAME %s TO %s_%s",TabNameTmp,TabNameTmp,SysDate_1); 						
+	 						break;
+	 					/*数据表修改--单中心导数(分区表):用Rename方式将目标表改为：表名+来源库+日期*/
+	 					case '2':
+	 						sprintf(StrBuf1, "RENAME %s TO %s_%s",TabNameTmp,TabNameTmp,SysDate_1);
+							sprintf(StrBuf2, "CREATE TABLE %s AS SELECT * FROM RZ_%s WHERE 1=2",TabNameTmp,TabNameTmp);
+	 						break;
+	 					/*数据表修改--多中心导数(分区表):若不存在-->用Rename方式将目标表改为：表名+日期;若存在-->将原表数插入新表并清空原表*/	
+	 					case '3':	 						
+	 						sprintf(alTmpTab1,"%s_%s",TabNameTmp,SysDate_1); //alTmpTab1=表名+日期
+	 						rc=DB_IsExistTable(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,alTmpTab1);
+	 						//如果新表存在，就用insert+truncate;如果不存在就用rename+create
+	 						if (rc){
+	 							sprintf(StrBuf1, "INSERT INTO %s  SELECT /*+ parallel(t,4) */ * FROM %s t",alTmpTab1,TabNameTmp);
+	 							sprintf(StrBuf2, "TRUNCATE TABLE %s",TabNameTmp);	 							
+	 						}else{
+	 							sprintf(StrBuf1, "RENAME %s TO %s_%s",TabNameTmp,TabNameTmp,SysDate_1);
+	 							sprintf(StrBuf2, "CREATE TABLE %s AS SELECT * FROM RZ_%s WHERE 1=2",TabNameTmp,TabNameTmp);
+	 						} 							 						
+	 						break;
+	 					case '4':	 						
+	 						sprintf(alTmpTab1,"%s_%s",TabNameTmp,SysDate); //alTmpTab1=表名+日期
+	 						rc=DB_IsExistTable(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink,alTmpTab1);
+	 						//判断表+日期是否存在，如果不存在就创建新表：表名+日期
+	 						if (!rc){
+	 							sprintf(StrBuf, "CREATE TABLE %s AS SELECT * FROM RZ_%s WHERE 1=2",alTmpTab1,TabNameTmp);
+	 						}else{
+	 							sprintf(StrBuf, "select '表-%s存在' from dual",alTmpTab1);
+	 						}						 						
+	 						break;
+	 					/*数据表修改--多中心导数*/
+	 					case '5':
+	 						sprintf(StrBuf, "RENAME %s TO %s_%c_%s",TabNameTmp,TabNameTmp,ST_DayEnd.FromLink[0],SysDate_1);
+	 						break;
+	 					default:
+	 						MonCodeStr[i]='0';	//赋值用作监控代码
+	 						continue;
+	 				}
+
+	 				rc=DB_Connect(ST_DayEnd.ToUser,ST_DayEnd.ToPass,ST_DayEnd.ToLink);
+	 				if(rc) _swVdebug(0,"Proc_DayEnd-->DB_Connect:rc=<%d>",rc);
+	 				if (!glTestFlag){
+	 					if((ST_DayEnd.OperFlag[i]=='2') || (ST_DayEnd.OperFlag[i]=='3')){
+		 					Ret1=DB_SqlExec(StrBuf1);
+		 					Ret2=DB_SqlExec(StrBuf2);
+		 					Ret=Ret1+Ret2;
+		 					_swVdebug(0, "数据表修改 [%c],Ret=【%d】Ret1=【%d】Ret2=【%d】 DB=【%s】 StrBuf1=【%s】 StrBuf2=【%s】",ST_DayEnd.OperFlag[i],Ret,Ret1,Ret2,ST_DayEnd.ToLink,StrBuf1,StrBuf2);
+		 				}else{
+		 					Ret=DB_SqlExec(StrBuf);
+		 					_swVdebug(0, "数据表修改 [%c],Ret=【%d】 DB=【%s】 StrBuf=【%s】",ST_DayEnd.OperFlag[i],Ret,ST_DayEnd.ToLink,StrBuf);
+		 				}
+	 					if(!(Ret)){DB_Commit();}else{DB_Rollback();}
+	 				}else{
+	 					_swVdebug(0, "数据表修改 [%c],Ret1=【%d】 Ret2=【%d】 Ret=【%d】 DB=【%s】StrBuf1=【%s】 StrBuf2=【%s】 StrBuf=【%s】",ST_DayEnd.OperFlag[i],Ret1,Ret2,Ret,ST_DayEnd.ToLink,StrBuf1,StrBuf2,StrBuf);	
+	 				}
+	 				if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码	 				
+	 				break;
+
+	 		/*数据表新增*/
+	 		case 4:	 				
+	 				switch (ST_DayEnd.OperFlag[i]){
+	 					/*数据表新增-创建表分区:用ALTER+ADD PARTITION方式创建N天之后的表空间*/
+	 					case '1':
+	 						//椐据配置表中的[新增日期字段]获取要创建N天之后的日期
+							DayNum=atoi(ST_DayEnd.CreateDate);
+							DB_SysDate_Count(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,DayNum);
+
+	 						//取得表空间名，变量为：TabSpaceName
+	 						DB_GetTabSpaceName(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName);
+
+							//取得表分区名，临时变量为：alTmpTab2						
+							sprintf(alTmpTab2,"P%s",SysDate_Count);
+							
+	 						//如果分区存在,则不做操作，直接对返回码赋正值.
+	 						rc=DB_IsExistTabPart(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName,alTmpTab2);
+	 						_swVdebug(0,"Proc_DayEnd-->DB_IsExistTabPart-1:,rc=%d",rc);
+	 						if(!glTestFlag && rc) {
+	 							_swVdebug(0,"Proc_DayEnd-->DB_IsExistTabPart:表[%s]的分区[%s]存在,rc=<%d>",ST_DayEnd.TabName,alTmpTab2,rc);
+	 							MonCodeStr[i]='1';
+	 						}else{
+	 							//新增N天后的表分区 
+		 						sprintf(StrBuf, "ALTER TABLE %s ADD PARTITION P%s VALUES ('%s') TABLESPACE %s",ST_DayEnd.TabName,SysDate_Count,SysDate_Count,TabSpaceName);
+				 				rc=DB_Connect(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink);
+				 				if(rc) _swVdebug(0,"DB_Connect:rc=<%d>",rc);
+				 				if (!glTestFlag){
+									if(!(Ret=DB_SqlExec(StrBuf))){DB_Commit();}else{DB_Rollback();}
+								}
+								if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码
+		 						_swVdebug(0, "数据表新增-创建表分区[%c],Ret=【%d】 DB=【%s】 StrBuf=【%s】",ST_DayEnd.OperFlag[i],Ret,ST_DayEnd.FromLink,StrBuf);
+							}
+	 						break;
+
+	 					/*数据表新增-扩展表分区:用ALTER+MODIFY PARTITION方式扩展N天之后的表空间*/
+	 					case '2':
+	 						//获取下一天之后的日期
+	 						DayNum=1;
+	 						//DayNum=atoi(ST_DayEnd.CreateDate);
+							DB_SysDate_Count(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,DayNum);
+		
+							//扩展下一天表空间
+							sprintf(StrBuf, "ALTER TABLE %s MODIFY PARTITION P%s ALLOCATE EXTENT(SIZE %dM)",ST_DayEnd.TabName,SysDate_Count,ST_DayEnd.ExtendSize);
+			 				rc=DB_Connect(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink);
+			 				if(rc) _swVdebug(0,"DB_Connect:rc=<%d>",rc);
+			 				if (!glTestFlag){
+								if(!(Ret=DB_SqlExec(StrBuf))){DB_Commit();}else{DB_Rollback();}
+							}
+							if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码
+			 				_swVdebug(0, "扩展表分区[%c],Ret=【%d】 DB=【%s】 StrBuf=【%s】",ST_DayEnd.OperFlag[i],Ret,ST_DayEnd.FromLink,StrBuf);
+	 						printf("4:Ret1=%d,Ret2=%d,Ret=%d\n",Ret1,Ret2,Ret);
+	 						break;
+
+	 					/*数据表新增:创建表分区+扩展表空间*/
+	 					case '3':
+	 						/******************************标识1-创建表分区***********************************/
+	 						//椐据配置表中的[新增日期字段]获取要创建N天之后的日期
+							DayNum=atoi(ST_DayEnd.CreateDate);
+							rc=DB_SysDate_Count(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,DayNum);
+
+	 						//取得表空间名，变量为：TabSpaceName
+	 						rc=DB_GetTabSpaceName(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName);
+
+	 						//取得表分区名，临时变量为：alTmpTab2						
+							sprintf(alTmpTab2,"P%s",SysDate_Count);
+							
+	 						//如果分区存在,则不做操作，直接对返回码赋正值.
+	 						rc=DB_IsExistTabPart(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,ST_DayEnd.TabName,alTmpTab2);
+	 						_swVdebug(0,"Proc_DayEnd-->DB_IsExistTabPart:,rc=%d",rc);
+	 						if(!glTestFlag && rc) {
+	 							_swVdebug(0,"Proc_DayEnd-->DB_IsExistTabPart:表[%s]的分区[%s]存在,rc=<%d>",ST_DayEnd.TabName,alTmpTab2,rc);
+	 							Ret1=0;
+	 						}else{
+	 							//新增N天后的表分区
+		 						sprintf(StrBuf1, "ALTER TABLE %s ADD PARTITION P%s VALUES ('%s') TABLESPACE %s",ST_DayEnd.TabName,SysDate_Count,SysDate_Count,TabSpaceName);
+	
+				 				DB_Connect(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink);
+	
+				 				if(rc) _swVdebug(0,"DB_Connect:rc=<%d>",rc);
+				 				if (!glTestFlag){
+				 					printf("我在程序 ....\n");
+									if(!(Ret1=DB_SqlExec(StrBuf1))){DB_Commit();}else{DB_Rollback();}
+								}
+		 						_swVdebug(0, "数据表新增-创建表分区,Ret1=【%d】 DB=【%s】 StrBuf1=【%s】",Ret1,ST_DayEnd.FromLink,StrBuf1);
+							}
+		 						/******************************标识2-创扩展表分区***********************************/
+		 						//获取下一天之后的日期
+		 						DayNum=1;
+								rc=DB_SysDate_Count(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink,DayNum);
+	
+								//扩展下一天表空间
+								sprintf(StrBuf2, "ALTER TABLE %s MODIFY PARTITION P%s ALLOCATE EXTENT(SIZE %dM)",ST_DayEnd.TabName,SysDate_Count,ST_DayEnd.ExtendSize);
+				 				rc=DB_Connect(ST_DayEnd.FromUser,ST_DayEnd.FromPass,ST_DayEnd.FromLink);
+				 				if(rc) _swVdebug(0,"DB_Connect:rc=<%d>",rc);
+				 				if (!glTestFlag){
+									if(!(Ret2=DB_SqlExec(StrBuf2))){DB_Commit();}else{DB_Rollback();}
+								}
+				 				_swVdebug(0, "扩展表分区,Ret2=【%d】 DB=【%s】 StrBuf2=【%s】",Ret2,ST_DayEnd.FromLink,StrBuf2);
+				 				/*---------------------------------------处理代码结束分隔线---------------------------------------*/
+								Ret=Ret1+Ret2;
+				 				if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码
+			 				
+	 						break;
+	 					default:
+	 						MonCodeStr[i]='0';	//赋值用作监控代码
+	 						continue;
+	 				}
+	 				break;
+
+	 		//是否执行程序
+	 		case 9:
+	 				printf("9:Ret1=%d,Ret2=%d,Ret=%d\n",Ret1,Ret2,Ret);
+	 				if(ST_DayEnd.OperFlag[i]=='1'){
+		 				sprintf(StrBuf, "%s",ST_DayEnd.ExecShell);
+		 				if (!glTestFlag){Ret=_SystemExec(StrBuf);}
+		 				if (Ret==0){MonCodeStr[i]='1';}else{MonCodeStr[i]='0';}	//赋值用作监控代码
+		 				_swVdebug(0, "执行外部程序[%c],Ret=【%d】 ID=【%d】 StrBuf=【%s】",ST_DayEnd.OperFlag[i],Ret,ST_DayEnd.Id,StrBuf);
+		 			}else{
+		 				MonCodeStr[i]='0';	//赋值用作监控代码
+		 			}
+
+		 			break;
+	 		default:
+	 				MonCodeStr[i]='0';	//赋值用作监控代码
+	 				continue;
+	 	}
+	}
+}
+
+
+
+/**************************************************************
+ ** 函数名      : Proc_OL_TransDetail
+ ** 功  能      : 处理流水表
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_OL_TransDetail()
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char TransTab_Today[35];		//今天的表
+		char TransTab_Yesterday[35];		//昨天的表
+		char TransTab_Tomorrow[35];		//明天的表
+		char ErroCode_Today[20];		//今天的错误码
+		char ErroCode_Yesterday[20];		//昨天的错误码
+		char ErroCode_Tomorrow[20];		//明天的错误码
+	EXEC SQL END DECLARE SECTION;
+
+	INIT(TransTab_Today);
+	INIT(TransTab_Yesterday);
+	INIT(TransTab_Tomorrow);
+	INIT(ErroCode_Today);
+	INIT(ErroCode_Yesterday);
+	INIT(ErroCode_Tomorrow);
+
+
+	//根据系统日期获取总分钟数
+	_dateTolong(SysDate,&sysTimeSec);
+	sysTimeSec=sysTimeSec/86400;
+	sysTimeSec=sysTimeSec%3;	//取3的模
+
+
+	//printf("sysTimeSec=%d\n",sysTimeSec);
+	if (sysTimeSec==0){
+		strcpy(TransTab_Today,		"OL_TRANSDETAIL_0");
+		strcpy(TransTab_Yesterday,	"OL_TRANSDETAIL_2");
+		strcpy(TransTab_Tomorrow,	"OL_TRANSDETAIL_1");
+	} else if (sysTimeSec==1){
+		strcpy(TransTab_Today,		"OL_TRANSDETAIL_1");
+		strcpy(TransTab_Yesterday,	"OL_TRANSDETAIL_0");
+		strcpy(TransTab_Tomorrow,	"OL_TRANSDETAIL_2");
+	} else {
+		strcpy(TransTab_Today,		"OL_TRANSDETAIL_2");
+		strcpy(TransTab_Yesterday,	"OL_TRANSDETAIL_1");
+		strcpy(TransTab_Tomorrow,	"OL_TRANSDETAIL_0");
+	}
+
+	strcpy(ErroCode_Today,		"000");_bswTrim(ErroCode_Today);
+	strcpy(ErroCode_Yesterday,	"416");_bswTrim(ErroCode_Yesterday);
+	strcpy(ErroCode_Tomorrow,	"064");_bswTrim(ErroCode_Tomorrow);
+
+	do{
+		//处理今天的流水表
+		EXEC SQL UPDATE ch_dayend_cfg t SET t.OperFlag='000000000' ,t.monflag='1',t.monerro=substr(t.monerro,1,5)||:ErroCode_Today WHERE t.TabName=:TransTab_Today;
+		if(sqlca.sqlcode){
+			_swVdebug(0,"TransTab_Today=[%s] OperFlag=[000000000] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",TransTab_Today,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+			return (sqlca.sqlcode);
+		}
+		//处理明天的流水表
+		EXEC SQL UPDATE ch_dayend_cfg t SET t.OperFlag='003000000' ,t.monflag='1',t.monerro=substr(t.monerro,1,5)||:ErroCode_Tomorrow WHERE t.TabName=:TransTab_Tomorrow;
+		if(sqlca.sqlcode){
+			_swVdebug(0,"TransTab_Today=[%s] OperFlag=[003000000] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",TransTab_Tomorrow,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+			return (sqlca.sqlcode);
+		}
+		//处理昨天的流水表
+		EXEC SQL UPDATE ch_dayend_cfg t SET t.OperFlag='420400000' ,t.monflag='1',t.monerro=substr(t.monerro,1,5)||:ErroCode_Yesterday WHERE t.TabName=:TransTab_Yesterday;
+		if(sqlca.sqlcode){
+			_swVdebug(0,"TransTab_Today=[%s] OperFlag=[420400000] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",TransTab_Yesterday,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+			return (sqlca.sqlcode);
+		}
+		EXEC SQL COMMIT;
+	}while(0);
+
+	_swVdebug(0,"流水表信息：今天=[%s] 明天=[%s] 昨天=[%s]",TransTab_Today,TransTab_Tomorrow,TransTab_Yesterday);
+	return SUCC;
+}
+
+/**************************************************************
+ ** 函数名      : Proc_UpdateDate
+ ** 功  能      : 更新流水表操作日期
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/6 16:42:47
+ ** 最后修改日期: 2015/3/6 16:42:49
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_UpdateDate()
+{
+	if (rc=DB_Connect(glUserName,glPassWord,glTnsNames)){
+		_swVdebug(0, "Proc_UpdateDate:数据库<%s@%s>连接失败,返回值=【%d】",glUserName,glTnsNames,rc);
+		return rc;
+	}else{
+		do
+		{
+			EXEC SQL UPDATE ch_dayend_cfg
+                   SET operdate = sysdate
+                 WHERE id=:ST_DayEnd.Id;
+			if(sqlca.sqlcode){
+				_swVdebug(0,"Proc_UpdateDate:id=[%d] sqlca.sqlcode=[%d] sqlca.sqlerrm.sqlerrmc[%s]",ST_DayEnd.Id,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+				DB_Rollback();
+				return (sqlca.sqlcode);
+			}
+			DB_Commit();
+		}while(0);
+
+	}
+
+	return SUCC;
+}
+
+
+/**************************************************************
+ ** 函数名      : Proc_Tab
+ ** 功  能      : 单表处理模式
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/31 10:04:36
+ ** 最后修改日期: 2015/3/31 10:04:37
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_Tab()
+{
+	char	alTmpStr[50];
+	//初始化
+	INIT(alTmpStr);
+	INIT(glUserName);
+	INIT(glPassWord);
+	INIT(glTnsNames);
+	INITS(ST_DayEnd);
+
+	//获取数据库用户信息
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_USERNAME", glUserName) < 0)	 _swVdebug(0, "读 DB_USERNAME 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_PASSWORD", glPassWord) < 0)	 _swVdebug(0, "读 DB_PASSWORD 出错! ");
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_TNSNAMES", glTnsNames) < 0)	 _swVdebug(0, "读 DB_TNSNAMES 出错! ");
+
+	/*处理数据库密码：如果第1位=$,第二位={,最后一位=}，则判定其为环境变量，直接取环境变量值，并重新赋值.*/
+	if(rc=_isEnvPasswd(glPassWord)) {_swVdebug(0, "_isEnvPasswd:密码错误 !返回值=【%d】",rc);return rc;}
+
+	_swVdebug(0, "Proc_Tab:单表模式执行完毕1,glTabName=%s",glTabName);
+	//获取数据库表信息
+	if (_GetProfileString(glCfgFile, "PBX_CASH_REG", "TAB_ID",alTmpStr) < 0)		_swVdebug(0, "读 TAB_ID 出错! ");
+	ST_DayEnd.Id=atoi(alTmpStr);
+	INIT(alTmpStr);
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_TABNAME", 	ST_DayEnd.TabName) < 0)		_swVdebug(0, "读 TAB_TABNAME 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_TABNAMEDESC",	ST_DayEnd.TabNameDesc) < 0)	_swVdebug(0, "读 TAB_TABNAMEDESC 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_FROMUSER",	ST_DayEnd.FromUser) < 0)	_swVdebug(0, "读 TAB_FROMUSER 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_FROMPASS", 	ST_DayEnd.FromPass) < 0)	_swVdebug(0, "读 TAB_FROMPASS 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_FROMLINK", 	ST_DayEnd.FromLink) < 0)	_swVdebug(0, "读 TAB_FROMLINK 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_TOUSER", 	ST_DayEnd.ToUser) < 0)		_swVdebug(0, "读 TAB_TOUSER 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_TOPASS", 	ST_DayEnd.ToPass) < 0)		_swVdebug(0, "读 TAB_TOPASS 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_TOLINK", 	ST_DayEnd.ToLink) < 0)	 	_swVdebug(0, "读 TAB_TOLINK 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_OPERFLAG", 	ST_DayEnd.OperFlag) < 0)	_swVdebug(0, "读 TAB_OPERFLAG 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_KEEPDATE", 	ST_DayEnd.KeepDate) < 0)	_swVdebug(0, "读 TAB_KEEPDATE 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_CREATEDATE", 	ST_DayEnd.CreateDate) < 0)	_swVdebug(0, "读 TAB_CREATEDATE 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_DATECLOUMN", 	ST_DayEnd.DateCloumn) < 0)	_swVdebug(0, "读 TAB_DATECLOUMN 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_DATEFORMAT", 	ST_DayEnd.DateFormat) < 0)	_swVdebug(0, "读 TAB_DATEFORMAT 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_EXTENDSIZE", 	alTmpStr) < 0)			_swVdebug(0, "读 TAB_EXTENDSIZE 出错! ");
+	ST_DayEnd.ExtendSize=atoi(alTmpStr);
+	INIT(alTmpStr);
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_EXECSHELL", 	ST_DayEnd.ExecShell) < 0)	_swVdebug(0, "读 TAB_EXECSHELL 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_MONFLAG", 	ST_DayEnd.MonFlag) < 0)	 	_swVdebug(0, "读 TAB_MONFLAG 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_MONCODE", 	ST_DayEnd.MonCode) < 0)	 	_swVdebug(0, "读 TAB_MONCODE 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_MONERRO", 	ST_DayEnd.MonErro) < 0)	 	_swVdebug(0, "读 TAB_MONERRO 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_MONDESC", 	ST_DayEnd.MonDesc) < 0)	 	_swVdebug(0, "读 TAB_MONDESC 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_STATUS", 	ST_DayEnd.Status) < 0)	 	_swVdebug(0, "读 TAB_STATUS 出错! ");
+	if (_GetProfileString(glCfgFile, glTabName, "TAB_OPERDATE", 	ST_DayEnd.OperDate) < 0)	_swVdebug(0, "读 TAB_OPERDATE 出错! ");
+
+	/*去空格 非字符项不用做该操作*/
+	//_bswTrim(ST_DayEnd.Id);
+	_bswTrim(ST_DayEnd.TabName);
+	_bswTrim(ST_DayEnd.TabNameDesc);
+	_bswTrim(ST_DayEnd.FromUser);
+	_bswTrim(ST_DayEnd.FromPass);
+	_bswTrim(ST_DayEnd.FromLink);
+	_bswTrim(ST_DayEnd.ToUser);
+	_bswTrim(ST_DayEnd.ToPass);
+	_bswTrim(ST_DayEnd.ToLink);
+	_bswTrim(ST_DayEnd.OperFlag);
+	_bswTrim(ST_DayEnd.KeepDate);
+	_bswTrim(ST_DayEnd.CreateDate);
+	_bswTrim(ST_DayEnd.DateCloumn);
+	_bswTrim(ST_DayEnd.DateFormat);
+	//_bswTrim(ST_DayEnd.ExtendSize);
+	_bswTrim(ST_DayEnd.ExecShell);
+	_bswTrim(ST_DayEnd.MonFlag);
+	_bswTrim(ST_DayEnd.MonCode);
+	_bswTrim(ST_DayEnd.MonErro);
+	_bswTrim(ST_DayEnd.MonDesc);
+	_bswTrim(ST_DayEnd.Status);
+	_bswTrim(ST_DayEnd.OperDate);
+
+	/*判断并处理数据库密码,如果是环境变量就取环境变量的值，否则为原值*/
+	if(rc=_isEnvPasswd(ST_DayEnd.FromPass)) {_swVdebug(0, "_isEnvPasswd:解ST_DayEnd.FromPass密码错误 !返回值=【%d】",rc);return rc;}
+	if(rc=_isEnvPasswd(ST_DayEnd.ToPass)) {_swVdebug(0, "_isEnvPasswd:解ST_DayEnd.ToPass密码错误 !返回值=【%d】",rc);return rc;}
+
+
+	/*获取数据库系统日期及清理日期.*/
+	INIT(SysDate_1);
+	rc=DB_SysDate_Count(glUserName,glPassWord,glTnsNames,-1);
+	strcpy(SysDate_1,SysDate_Count);
+	if(rc) {_swVdebug(0, "DB_SysDate_Count:数据库清理日期获取失败!返回值=【%d】",rc);return rc;}
+
+	//根据不同的操作方式对表进行处理.
+	Proc_DayEnd();
+	_swVdebug(0, "Proc_Tab:单表【%s】执行【%s】操作完毕",ST_DayEnd.TabName,ST_DayEnd.OperFlag);
+	return SUCC;
+}
+
+
+/**************************************************************
+ ** 函数名      : Proc_GetExpdpFile
+ ** 功  能      : 从数据库服务器下载数据文件并删除
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/4/1 17:02:41
+ ** 最后修改日期: 2015/4/3 10:31:53
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_GetExpdpFile(){
+
+	char	buff[512];
+	char	FileName_Dmp[128];
+	char	FileName_Log[128];
+	char	FileDirs[128];
+	char	FileDirsLocal[128];
+	char	FromIp[20];
+	struct 	timeval ScpBegin_1, ScpEnd_1;
+	long	ScpTime_1;
+	int 	status;
+
+	INIT(FileName_Dmp);
+	INIT(FileName_Log);
+	INIT(FileDirs);
+	INIT(FileDirsLocal);
+	INIT(FromIp);
+
+	/*获取数据库服务器*/
+	if (ST_DayEnd.FromLink[0]=='a' ||ST_DayEnd.FromLink[0]=='A'){
+		if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVIP_A", FromIp) < 0)		_swVdebug(0, "读 DB_SERVIP_A  出错! ");
+		if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVDIR_A",FileDirs) < 0)	_swVdebug(0, "读 DB_SERVDIR_A 出错! ");
+	} else if (ST_DayEnd.FromLink[0]=='b' ||ST_DayEnd.FromLink[0]=='B'){
+		if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVIP_B", FromIp) < 0)		_swVdebug(0, "读 DB_SERVIP_B  出错! ");
+		if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVDIR_B",FileDirs) < 0)	_swVdebug(0, "读 DB_SERVDIR_B 出错! ");
+	} else if (ST_DayEnd.FromLink[0]=='y' ||ST_DayEnd.FromLink[0]=='Y'){
+		if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVIP_Y", FromIp) < 0)		_swVdebug(0, "读 DB_SERVIP_Y  出错! ");
+		if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVDIR_Y",FileDirs) < 0)	_swVdebug(0, "读 DB_SERVDIR_Y 出错! ");
+	} else {
+		_swVdebug(0, "数据库IP地址获取失败,请重新检查.");
+		return FAIL;
+	}
+	//获取本地数据库目录
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVDIR_LOCAL", FileDirsLocal) < 0)		_swVdebug(0, "读 DB_SERVDIR_LOCAL  出错! ");
+
+	/*获取数据文件名*/
+	sprintf(FileName_Dmp,"%s/%s.%s.%s.dmp",FileDirs,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp数据文件
+	sprintf(FileName_Log,"%s/EXPDP.%s.%s.%s.log",FileDirs,ST_DayEnd.TabName,ST_DayEnd.FromLink,SysDate);	//dmp日志文件
+
+	gettimeofday(&ScpBegin_1, NULL);
+
+	while(1) {
+		INIT(buff);
+		sprintf(buff, "ssh view@%s ls -l %s/*%s.%s*.dmp | awk '{print $1}' | cut -b 8 | grep r",FromIp,FileDirs,ST_DayEnd.TabName,ST_DayEnd.FromLink);
+		_swVdebug(0, "TabNameTmp=[%s],Buff=[%s]",ST_DayEnd.TabName,buff);
+		status = system(buff);
+		_swVdebug(0, "Proc_GetExpdpFile:sh_buff_status=[%d]", status);
+		if(0 == status) {
+			break;
+		}
+		else {
+			gettimeofday(&ScpEnd_1, NULL);
+			ScpTime_1 = ScpEnd_1.tv_sec - ScpBegin_1.tv_sec;
+			_swVdebug(0, "Proc_GetExpdpFile:ScpTime_1=[%d]", ScpTime_1);
+			if(ScpTime_1 < 60) {
+				sleep(3);
+				continue;
+			}
+			else if(ScpTime_1 >= 60) {
+				return FAIL;
+			}
+		}
+	}
+	
+	/*别着急哦,走慢一点，等等它... ^_^*/
+	sleep(3);
+	
+	//下载dmp文件
+	INIT(buff);
+	//sprintf(buff, "scp -r view@%s:%s/%s %s/dmp", FromIp,FileDirs, FileName_Dmp,getenv(DAYEND_ENV));
+	sprintf(buff, "scp -r view@%s:%s %s", FromIp,FileName_Dmp,FileDirsLocal);
+	_swVdebug(5, "Dmp文件下载=[%s]", buff);
+	if(rc=system(buff)) {_swVdebug(0, "Proc_GetExpdpFile:下载dmp文件失败 !返回值=【%d】",rc);return rc;}
+
+	//下载Log文件
+	INIT(buff);
+	sprintf(buff, "scp -r view@%s:%s %s", FromIp,FileName_Log,FileDirsLocal);
+	_swVdebug(5, "Log文件下载=[%s]", buff);
+	if(rc=system(buff)) {_swVdebug(0, "Proc_GetExpdpFile:下载log文件失败 !返回值=【%d】",rc);return rc;}
+
+	//删除dmp和日志文件
+	memset(buff, 0x00, sizeof(buff));
+	sprintf(buff, "ssh view@%s rm -f %s/*.dmp",FromIp,FileDirs);
+	_swVdebug(5, "删除数据库服务器日志文件BUF=[%s]", buff);
+	if(rc=system(buff)) {_swVdebug(0, "Proc_GetExpdpFile:删除dmp文件失败 !返回值=【%d】",rc);return rc;}
+	//删除日志文件
+	memset(buff, 0x00, sizeof(buff));
+	sprintf(buff, "ssh view@%s rm -f %s/*.log",FromIp,FileDirs);
+	_swVdebug(5, "删除数据库服务器日志文件BUF=[%s]", buff);
+	if(rc=system(buff)) {_swVdebug(0, "Proc_GetExpdpFile:log文件失败 !返回值=【%d】",rc);return rc;}
+
+	return SUCC;
+}
+
+
+/**************************************************************
+ ** 函数名      : Proc_MvImpdpFile
+ ** 功  能      : 将数据库目录中的文件移动到程序主目录
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/4/16 3:08:07
+ ** 最后修改日期: 2015/4/16 3:08:09
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_MvImpdpFile()
+{
+	char	buff[512];
+	char	FileDirsLocal[128];
+	
+	INIT(buff);
+	INIT(FileDirsLocal);
+	
+	//获取本地数据库目录
+	if (_GetProfileString(glCfgFile, "DAYEND", "DB_SERVDIR_LOCAL", FileDirsLocal) < 0)	_swVdebug(0, "读 DB_SERVDIR_LOCAL  出错! ");
+	
+	//将dmp从数据库目录移动到当前程序主目录
+	INIT(buff);
+	sprintf(buff, "mv %s/*%s.%s*.dmp %s/dmp",FileDirsLocal,ST_DayEnd.TabName,ST_DayEnd.FromLink,getenv(DAYEND_ENV));
+	_swVdebug(5, "移动Dmp文件=[%s]", buff);
+	if(rc=system(buff)) {_swVdebug(0, "Proc_MvImpdpFile:移动dmp文件失败 !返回值=【%d】",rc);return rc;}
+
+	//将log从数据库目录移动到当前程序主目录
+	INIT(buff);
+	sprintf(buff, "mv %s/*%s.%s*.log %s/log",FileDirsLocal,ST_DayEnd.TabName,ST_DayEnd.FromLink,getenv(DAYEND_ENV));
+	_swVdebug(5, "移动log文件=[%s]", buff);
+	if(rc=system(buff)) {_swVdebug(0, "Proc_MvImpdpFile:移动log文件失败 !返回值=【%d】",rc);return rc;}
+		
+	return SUCC;
+}
+
+
+
+/**************************************************************
+ ** 函数名      : Proc_Monitor
+ ** 功  能      : 发送监控
+ ** 作  者      : Hu
+ ** 建立日期    : 2015/3/26 15:40:27
+ ** 最后修改日期: 2015/3/26 15:40:28
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : FAIL:失败. SUCC:成功
+***************************************************************/
+int Proc_Monitor()
+{
+	char	alTmp[20];			//临时字串
+	char	alTmp1[20];			//临时字串1
+	char	alTmp2[20];			//临时字串2
+	char	Mon_Buff[562+1];
+	char	Mon_EventCode[4+1];		//事件代码
+	char	Mon_SystemCode[16+1];		//系统代码
+	char	Mon_IpAddr[12+1];		//本机IP地址
+	char 	Mon_Date[10+1];			//采集日期
+	char 	Mon_Time[6+1];			//采集时间
+	char	Mon_StepCode[4+1];		//阶段代码=监控步骤
+	char	Mon_Name[40+1];			//监控名称
+	char	Mon_Status[10+1];		//处理状态:成功-0，失败-1
+	char	Mon_ALarmLevel[10+1];		//报警级别:正常-0;预警-1;报警-2
+	char	Mon_Elapsed[10+1];		//处理时长
+	char	Mon_Pid[20+1];			//进程号
+	char	Mon_Notes[400+1];		//描述信息
+	char	Mon_ClearDate[10+1];		//清算日期
+
+	//初始化
+	INIT(alTmp1);
+	INIT(alTmp2);
+	INIT(Mon_EventCode);
+	INIT(Mon_SystemCode);
+	INIT(Mon_IpAddr);
+	INIT(Mon_Date);
+	INIT(Mon_Time);
+	INIT(Mon_Name);
+	INIT(Mon_Status);
+	INIT(Mon_ALarmLevel);
+	INIT(Mon_Elapsed);
+	INIT(Mon_Pid);
+	INIT(Mon_Notes);
+	INIT(Mon_ClearDate);
+	INIT(Mon_Buff);
+
+	/*监控发送条件：步骤号不为空;步骤号不为0000;监控开头不等于0;测试开头等于0.*/
+	if ((strcmp(ST_DayEnd.MonCode,"")!=0) && (strcmp(ST_DayEnd.MonCode,"0000")!=0) && (strcmp(ST_DayEnd.MonFlag,"0")!=0) &&  glTestFlag==0) {
+		_swVdebug(0, "Proc_Monitor:监控信息发送------------------Begin.");
+
+		//获取配置文件中的常量
+		if (_GetProfileString(glCfgFile, "MONINFO", "MON_S_IPADDR",	glMonServerIp) < 0)	 _swVdebug(0, "读 MON_S_IPADDR   出错! ");
+		if (_GetProfileString(glCfgFile, "MONINFO", "MON_S_IPPORT",	alTmp) < 0)	 	 _swVdebug(0, "读 MON_S_IPPORT   出错! ");
+		if (_GetProfileString(glCfgFile, "MONINFO", "MON_EVENTCODE",	Mon_EventCode) < 0)	 _swVdebug(0, "读 MON_EVENTCODE  出错! ");
+		if (_GetProfileString(glCfgFile, "MONINFO", "MON_SYSTEMCODE",	Mon_SystemCode) < 0)	 _swVdebug(0, "读 MON_SYSTEMCODE 出错! ");
+		if (_GetProfileString(glCfgFile, "MONINFO", "MON_EVENTCODE",	Mon_EventCode) < 0)	 _swVdebug(0, "读 MON_EVENTCODE  出错! ");
+		if (_GetProfileString(glCfgFile, "MONINFO", "MON_IPADDR",	Mon_IpAddr) < 0)	 _swVdebug(0, "读 MON_IPADDR     出错! ");
+
+
+		glMonServerPort=atoi(alTmp);			//服务器端口
+		sprintf(alTmp1,"%03d",_erTOshi(MonCodeStr));	//返回错误码
+		memcpy(alTmp2,ST_DayEnd.MonErro+5,3);		//数据库配置的监控码
+
+		time(&t);
+		strftime(Mon_Date, sizeof(Mon_Date), "%Y-%m-%d", localtime(&t));
+		strftime(Mon_Time, sizeof(Mon_Time), "%H%M%S", localtime (&t));
+		sprintf(Mon_StepCode,"%s",ST_DayEnd.MonCode);
+		sprintf(Mon_Name,"%s:%s",ST_DayEnd.TabName,ST_DayEnd.MonErro);
+		sprintf(Mon_Elapsed,"%.0f",difftime(Date_End,Date_Begin));
+		sprintf(Mon_Pid,"%d",getpid());
+		sprintf(Mon_ClearDate,"%s",SysDate_1);
+
+		//判断错误值,如果跟数据库配置一致，说明执行成功，否则失败!
+		if((strcmp(alTmp1,alTmp2))==0) {
+			sprintf(Mon_Status,"0");
+			sprintf(Mon_ALarmLevel,"0");
+			sprintf(Mon_Notes,"%s-操作成功=[%s:%s].返回码=【%9s】",ST_DayEnd.TabNameDesc,ST_DayEnd.OperFlag,ST_DayEnd.MonDesc,MonCodeStr);
+		} else {
+			sprintf(Mon_Status,"1");
+			sprintf(Mon_ALarmLevel,"2");
+			sprintf(Mon_Notes,"%s-操作失败=[%s:%s].错误码=【%9s】",ST_DayEnd.TabNameDesc,ST_DayEnd.OperFlag,ST_DayEnd.MonDesc,MonCodeStr);
+		}
+		
+		/*5006接口：事件代码,系统代码,本机IP地址,采集日期,采集时间,阶段代码=监控步骤,监控名称,处理状态,报警级别,处理时长,进程号,描述信息,清算日期*/
+		//5006接口各域的长度以变量定义为准
+		if(strcmp(Mon_EventCode,"5006")==0){
+			sprintf(Mon_Buff,"%4s%16s%12s%10s%6s%4s%40s%10s%10s%10s%20s%400s%10s",Mon_EventCode,Mon_SystemCode,Mon_IpAddr,Mon_Date,Mon_Time,Mon_StepCode,Mon_Name,Mon_Status,Mon_ALarmLevel,Mon_Elapsed,Mon_Pid,Mon_Notes,Mon_ClearDate);
+		/*5008接口：事件代码，系统代字，IP地址，日期，时间，步骤号，步骤名称，描述信息，报警级别，进程号*/
+		}else{	
+			/*各域的长度
+			#define OTHER_EVENTCODE_LEN		4
+			#define OTHER_SYSCODE_LEN		16
+			#define OTHER_IPADDR_LEN		12
+			#define OTHER_PICKDATE_LEN		10
+			#define OTHER_PICKTIME_LEN		6
+			#define OTHER_SETUPCODE_LEN		4
+			#define OTHER_DEFNAME_LEN		40
+			#define OTHER_ALARMCONTENT_LEN          200
+			#define OTHER_ALARMLEVEL_LEN		10
+			#define OTHER_PID_LEN			20	
+			*/	
+			sprintf(Mon_Buff,"%4s%16s%12s%10s%6s%4s%40s%200s%10s%20s",Mon_EventCode,Mon_SystemCode,Mon_IpAddr,Mon_Date,Mon_Time,Mon_StepCode,Mon_Name,Mon_Notes,Mon_ALarmLevel,Mon_Pid);
+		}
+		
+		_swVdebug(0, "Proc_Monitor:Mon_Buff=\n\t\t\t【%s】",Mon_Buff);
+		//发送1条记录
+		
+		if(Mon_Client_Proc(Mon_Buff,1)) {
+			_swVdebug(0, "Proc_Monitor:监控发送失败,请检查.");
+			return rc;
+		}	
+			
+		_swVdebug(0, "Proc_Monitor:监控信息发送------------------End.");
+	}
+ 
+	return SUCC;
+}
