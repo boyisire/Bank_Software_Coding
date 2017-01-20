@@ -1,0 +1,594 @@
+/****************************************************************/
+/* 模块编号 ：swShenj.dbc                                       */
+/* 模块名称 ：审计模块功能实现                                  */
+/* 作	 者 ：qh                                                */
+/* 建立日期 ：2006.12.22                                        */
+/* 最后修改日期：                                               */
+/* 模块用途 ：审计模块功能实现                                  */
+/* 本模块中包含如下函数及功能说明：                             */
+/****************************************************************/
+#include <time.h>
+#include "switch.h"
+
+/* 数据库定义 */
+EXEC SQL INCLUDE sqlca;
+
+/*定义全局变量*/
+#define iSMAILBOX  2        /*源邮箱号*/
+
+/*函数声明*/
+/*modify by wanghao 20141224
+int swTrade_trace_insert(char *alMsg_pack,short ilMsg_len);
+int swFiletrans_trace_insert(char *alMsg_pack,short ilMsg_len);*/
+int swTrade_trace_insert(char *alMsg_pack,unsigned int ilMsg_len);
+int swFiletrans_trace_insert(char *alMsg_pack,unsigned int ilMsg_len);
+void swQuit(int sig);
+int swGettime(char date[20],char rettime[9]);
+int str_replace(char org_str[32],char org_ch,char des_ch);
+
+int main(int argc,char **argv)
+{
+  short ilRc;
+  /*modify by wanghao20141224
+  short ilMsglen,ilPriority,ilClass,ilType,ilQid;*/
+  unsigned int ilMsglen,ilPriority,ilClass,ilType,ilQid;
+  struct msgpack slMsgpack;
+
+  /* 处理信号 */
+  signal(SIGTERM,swQuit);
+  signal(SIGINT,SIG_IGN);
+  signal(SIGQUIT,SIG_IGN);
+  signal(SIGHUP,SIG_IGN);
+  signal(SIGTSTP,SIG_IGN);
+
+  /*定义日志文件*/
+  strcpy(agDebugfile,"swAudit.debug");
+  /* 读取DEBUG标志 */
+  if((cgDebug = _swDebugflag("swAudit")) == FAIL)
+  {
+    fprintf(stderr,"读取DEBUG标志出错!");
+    exit(FAIL);
+  }
+
+  /* 打开数据库 */
+  if(swDbopen() != SUCCESS)
+  {
+    swVdebug(0,"S0010: [错误/数据库] swDbopen()打开数据库出错");
+    exit(FAIL);
+  }
+  swVdebug(2,"S0020: 打开数据库成功");
+
+  /*打开邮箱*/
+  ilRc = qattach(iSMAILBOX);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0030: 打开邮箱失败！[%d]",ilRc);
+    swQuit(FAIL);
+  }
+  swVdebug(2,"S0040: 打开邮箱成功！[%d]",ilRc);
+
+  /* 从邮箱读取报文并入库 */
+  while(1)
+  {
+    /*接收报文*/
+    ilMsglen = iMSGMAXLEN;
+    ilPriority = ilClass = ilType = 0;
+    memset(&slMsgpack,  0x00,  sizeof(slMsgpack));
+    swVdebug(2,"S0050: 开始接收报文[%d]");
+    ilRc = qread2((char *)&slMsgpack,&ilMsglen,&ilQid,&ilPriority,&ilClass,&ilType);
+    if(ilRc != 0)
+    {
+      swVdebug(0,"接收报文信息失败[%d]",ilRc);
+      swQuit(FAIL);
+    }
+      
+    if(cgDebug > 2)
+    {
+      swVdebug(3,"S0060: 收到报文:邮箱=[%d],优先级=[%d],class=[%d],type=[%d]",ilQid,ilPriority,ilClass,ilType);
+      swDebugmsghead((char *)&slMsgpack);
+      swDebughex(slMsgpack.aMsgbody,slMsgpack.sMsghead.iBodylen);
+    }
+    
+    /*判断源发邮箱号。ilQid： 其它-交易报文操作;1-文件传输操作*/
+    /*交易报文操作*/
+    if(ilQid != 1)         
+    {
+      ilRc = swTrade_trace_insert((char *)&slMsgpack.aMsgbody,ilMsglen-sizeof(struct msghead));
+    }
+    else                       /*文件传输操作*/
+    {
+      ilRc = swFiletrans_trace_insert((char *)&slMsgpack.aMsgbody,ilMsglen-sizeof(struct msghead));
+    }
+
+    /*判断数据库操作的返回值,做相应的处理。成功commit,失败rollback*/
+  	
+    swVdebug(2,"S0070: 函数调用返回值[%d]",ilRc);
+  }
+}
+
+/***************************************************************
+ ** 函数名      : swTrade_trace_insert
+ ** 功  能      : 交易日志入库函数
+ ** 作  者      : 
+ ** 建立日期    : 2006/12/26
+ ** 最后修改日期: 2006/12/26
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+/*moidfy by wanghao20141224 
+int swTrade_trace_insert(char *alMsg_pack,short ilMsg_len)*/
+int swTrade_trace_insert(char *alMsg_pack,unsigned int ilMsg_len)
+{
+  short ilRc,ilFldlen;
+  char alTmp[iFLDVALUELEN];
+
+  EXEC SQL BEGIN DECLARE SECTION;
+    char alSerilano[15],alTradedate[20],alstatus_desc[128];
+    short ilClass,ilType,ilSrc_qid,ilDes_qid,ilTradeflag;
+    char now_date[20],now_time[9],alCfg_id[32],alReg_Type[1];
+  EXEC SQL END DECLARE SECTION;
+
+  /*交易流水号*/
+  memset(alSerilano,  0x00,  sizeof(alSerilano));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"serilano",&ilFldlen,alSerilano);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0080: 取报文serialno域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  swVdebug(2,"S0090: 接交易流水号成功[%s]",alSerilano);
+
+  /*交易种类*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"class",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"取报文class域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilClass = atoi(alTmp);
+  swVdebug(2,"S0100: 接交易种类成功[%s]",alTmp);
+
+  /*交易类型*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"type",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0110: 取报文type域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilType = atoi(alTmp);
+  swVdebug(2,"S0120: 接交易类型成功[%s]",alTmp);
+
+  /*登记类型	1-错误；2-警告；3-事件*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"regtype",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0360: 取报文regtype域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  memset(alReg_Type,  0x00,  sizeof(alReg_Type));
+  strcpy(alReg_Type,alTmp);
+  /*ilRegtype = atoi(alTmp);*/
+  swVdebug(2,"S0370: 接源发组成功[%s]",alTmp);
+
+  /*源发邮箱*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"srcqid",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0130: 取报文srcqid域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilSrc_qid = atoi(alTmp);
+  swVdebug(2,"S0140: 接源发邮箱成功[%s]",alTmp);
+
+  /*目的邮箱*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"desqid",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0150: 取报文desqid域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilDes_qid = atoi(alTmp);
+  swVdebug(2,"S0160: 接目的邮箱成功[%s]",alTmp);
+
+  /*交易时间*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"tradetime",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0170: 取报文tradetime域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  /*取交易日期和时间*/
+  memset(alTradedate,    0x00,  sizeof(alTradedate));
+/*  strncpy(alTradedate,alTmp,10);
+*/
+  strcpy(alTradedate,alTmp);
+  str_replace(alTradedate,' ','-');
+  str_replace(alTradedate,':','.');
+  swVdebug(2,"S0180: alTradedate = [%s]",alTradedate);
+  swVdebug(2,"S0180: 接交易时间成功[%s]",alTmp);
+
+  /*状态标志*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"flag",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0200: 取报文flag域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilTradeflag = atoi(alTmp);
+  swVdebug(2,"S0210: 接状态标志成功[%s]",alTmp);
+
+  /*描述信息*/
+  memset(alstatus_desc,  0x00,  sizeof(alstatus_desc));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"statusdesc",&ilFldlen,alstatus_desc);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0220: 取报文statusdesc域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  swVdebug(2,"S0230: 接描述信息成功[%s]",alstatus_desc);
+  /*取系统时间*/
+  memset(now_date, 0x00,  sizeof(now_date));
+  memset(now_time, 0x00,  sizeof(now_time));
+  swGettime(now_date,now_time);
+  swVdebug(2,"S0240: now_date=[%s]\n",now_date);
+  
+  /*生成config_id(交易流水号.交易时间)*/
+  memset(alCfg_id,  0x00,  sizeof(alCfg_id));
+  sprintf(alCfg_id,"%s.%s",alSerilano,now_time);
+
+  /*数据入库操作*/
+  EXEC SQL INSERT INTO swt_trade_trace_ShenJ(config_id,trade_serialno,trade_class,trade_type,reg_type,
+    reg_date,src_qid,des_qid,trade_date,flag,desc_msg) VALUES 
+    (:alCfg_id,:alSerilano,:ilClass,:ilType,:alReg_Type,:now_date,:ilSrc_qid,
+    :ilDes_qid,:alTradedate,:ilTradeflag,:alstatus_desc);
+  if(sqlca.sqlcode)
+  {
+    if(sqlca.sqlcode == SQLDUPKEY)
+    {
+      swVdebug(0,"S0240: [错误/数据库] 记录已存在,sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      return FAIL;
+    }
+    swVdebug(0,"S0250: [错误/数据库] sqlca.sqlcode=%d",sqlca.sqlcode);
+    EXEC SQL ROLLBACK WORK;
+    return FAIL;
+  }
+  if(sqlca.sqlerrd[2] == 0) 
+  {
+    swVdebug(0,"S0260: [错误/数据库] sqlcode=%d",sqlca.sqlerrd[2]);
+    EXEC SQL ROLLBACK WORK;
+    return FAIL;
+  }
+  
+  EXEC SQL COMMIT WORK;
+
+  swVdebug(2,"S0270: 数据入库成功,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+
+  return SUCCESS;
+}
+
+/***************************************************************
+ ** 函数名      : swFiletrans_trace_insert
+ ** 功  能      : 文件传输日志入库函数
+ ** 作  者      : 
+ ** 建立日期    : 2006/12/26
+ ** 最后修改日期: 2006/12/26
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+/*文件传输日志入库函数*/
+/*modify by wanghao 20141224
+int swFiletrans_trace_insert(char *alMsg_pack,short ilMsg_len)*/
+int swFiletrans_trace_insert(char *alMsg_pack,unsigned int ilMsg_len)
+{
+  short ilRc,ilFldlen;
+  char alTmp[256];
+/* "ifdef" added by qh 20070420  主要是针对db2 64位机上用.将long改为sqlint64*/
+#ifdef DB_DB2_64
+  EXEC SQL BEGIN DECLARE SECTION;
+    char alFilename[65],alfileSerialno[15],nowdate[20],nowtime[9];
+    char alTrade_begin_time[20],alstatusdesc[128],alConfig_id[33];
+    char alTrade_end_time[20],alRegType[1];
+    short ilFlag,ilorggrpid,ilorgmbid,ildesgrpid,ildesmbid;
+    sqlint64 ilFilelen;
+  EXEC SQL END DECLARE SECTION;
+#endif
+#ifdef DATABASE
+  EXEC SQL BEGIN DECLARE SECTION;
+    char alFilename[65],alfileSerialno[15],nowdate[20],nowtime[9];
+    char alTrade_begin_time[20],alstatusdesc[128],alConfig_id[33];
+    char alTrade_end_time[20],alRegType[1];
+    short ilFlag,ilorggrpid,ilorgmbid,ildesgrpid,ildesmbid;
+    long ilFilelen;
+  EXEC SQL END DECLARE SECTION;
+#endif
+
+  /*文件序列号*/
+  memset(alfileSerialno,  0x00,  sizeof(alfileSerialno));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"serilano",&ilFldlen,alfileSerialno);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0280: 取报文serialno域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  swVdebug(2,"S0290: 接文件序列号成[%s]",alfileSerialno);
+
+  /*文件名*/
+  memset(alFilename,  0x00,  sizeof(alFilename));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"filename",&ilFldlen,alFilename);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0300: 取报文filename域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  swVdebug(2,"S0310: 接文件名成功[%s]",alFilename);
+
+  /*文件大小*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"filesize",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0320: 取报文filesize域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilFilelen = atol(alTmp);
+  swVdebug(2,"S0330: 接文件大小成功[%s]",alTmp);
+
+  /*状态标志*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"sendflag",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0340: 取报文flag域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilFlag = atoi(alTmp);
+  swVdebug(2,"S0350: 接状态标志成功[%s]",alTmp);
+
+  /*登记类型	1-错误；2-警告；3-事件*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"regtype",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0360: 取报文regtype域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  memset(alRegType,  0x00,  sizeof(alRegType));
+  strcpy(alRegType,alTmp);
+  /*ilRegType = atoi(alTmp);*/
+  swVdebug(2,"S0370: 接源发组成功[%s]",alTmp);
+
+  /*源发组*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"orggrpid",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0360: 取报文orggrpid域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilorggrpid = atoi(alTmp);
+  swVdebug(2,"S0370: 接源发组成功[%s]",alTmp);
+
+  /*源发邮箱*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"orgmbid",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0380: 取报文orgmbid域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ilorgmbid = atoi(alTmp);
+  swVdebug(2,"S0390: 接源发邮箱成功[%s]",alTmp);
+
+  /*目标组*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"desgrpid",&ilFldlen,alTmp); 
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0400: 取报文desgrpid域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ildesgrpid = atoi(alTmp);
+  swVdebug(2,"S0410: 接目标组成功[%s]",alTmp);
+
+  /*目标邮箱*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"desmbid",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0420: 取报文desmbid域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  ildesmbid = atoi(alTmp); 
+  swVdebug(2,"S0430: 接目标邮箱成功[%s]",alTmp);
+
+  /*开始时间*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  memset(alTrade_begin_time, 0x00,  sizeof(alTrade_begin_time));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"begintime",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0440: 取报文begintime域值失败[%d]",ilRc);
+    return FAIL;
+  }
+/*  strncpy(alTrade_begin_time,alTmp,10);
+*/
+
+  strcpy(alTrade_begin_time,alTmp);
+  str_replace(alTrade_begin_time,' ','-');
+  str_replace(alTrade_begin_time,':','.');
+  swVdebug(2,"S0450: 接开始时间成功[%s]",alTmp);
+
+  
+  /*结束时间*/
+  memset(alTmp,  0x00,  sizeof(alTmp));
+  memset(alTrade_end_time,  0x00,  sizeof(alTrade_end_time));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"endtime",&ilFldlen,alTmp);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0460: 取报文endtime域值失败[%d]",ilRc);
+    return FAIL;
+  }
+/*  strcpy(alTrade_end_time,strstr(alTmp," ")+1);
+*/
+  strcpy(alTrade_end_time,alTmp);
+  str_replace(alTrade_end_time,' ','-');
+  str_replace(alTrade_end_time,':','.');
+
+  swVdebug(2,"S0470: 接结束时间成功[%s]",alTmp);
+
+  /*描述信息*/
+  memset(alstatusdesc,  0x00,  sizeof(alstatusdesc));
+  ilRc = swFmlpackget(alMsg_pack,ilMsg_len,"statusdesc",&ilFldlen,alstatusdesc);
+  if(ilRc != 0)
+  {
+    swVdebug(0,"S0480: 取报文statusdesc域值失败[%d]",ilRc);
+    return FAIL;
+  }
+  swVdebug(2,"S0490: 接描述信息成功[%s]",alstatusdesc);
+  /*取系统时间*/
+  memset(nowdate, 0x00,  sizeof(nowdate));
+  memset(nowtime, 0x00,  sizeof(nowtime));
+  swGettime(nowdate,nowtime);
+  swVdebug(2,"S0240: nowdate=[%s];nowtime=[%s]\n",nowdate,nowtime);
+  
+  /*生成config_id  (文件序列号.开始时间)*/
+  memset(alConfig_id,  0x00,  sizeof(alConfig_id));
+  sprintf(alConfig_id,"%s.%s",alfileSerialno,nowtime);
+  
+  /*数据入库操作*/
+  swVdebug(2,"S0500: alTrade_begin_time=[%s];alTrade_end_time=[%s]\n",alTrade_begin_time,alTrade_end_time);
+
+  EXEC SQL INSERT INTO swt_filetrans_trace_ShenJ(config_id,file_serialno,filename,file_len,src_grpid,des_grpid,
+    reg_type,reg_date,src_qid,des_qid,trade_begin_time,trade_end_time,flag,desc_msg) VALUES 
+    (:alConfig_id,:alfileSerialno,:alFilename,:ilFilelen,:ilorggrpid,:ildesgrpid,:alRegType,:nowdate,:ilorgmbid,
+    :ildesmbid,:alTrade_begin_time,:alTrade_end_time,:ilFlag,:alstatusdesc);
+
+  swVdebug(2,"S0510: sqlca.sqlcode=[%d]",sqlca.sqlcode);
+
+  if(sqlca.sqlcode)
+  {
+    if(sqlca.sqlcode == SQLDUPKEY)
+    {
+      swVdebug(0,"S0520: [错误/数据库] 记录已存在,sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      return FAIL;
+    }
+    swVdebug(0,"S0530: [错误/数据库] sqlca.sqlcode=%d",sqlca.sqlcode);
+    EXEC SQL ROLLBACK WORK;
+    return FAIL;
+  }
+  if(sqlca.sqlerrd[2] == 0) 
+  {
+    swVdebug(0,"S0540: [错误/数据库] sqlcode=%d",sqlca.sqlerrd[2]);
+    EXEC SQL ROLLBACK WORK;
+    return FAIL;
+  }
+
+  EXEC SQL COMMIT WORK;
+
+  swVdebug(2,"S0550: 数据入库成功,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+
+  return SUCCESS;
+}
+
+/**************************************************************
+ ** 函数名      : swQuit
+ ** 功  能      : 退出模块处理
+ ** 作  者      : 史正烨
+ ** 建立日期    : 1999/11/25
+ ** 最后修改日期: 2001/3/23
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : sig       :信号
+ ** 返回值      : void     
+***************************************************************/
+void swQuit(int sig)
+{
+  short ilRc;
+
+  signal(SIGTERM,SIG_IGN);
+  
+  swVdebug(2,"S0560: 审计模块已经停止...");
+ 
+  /* 关闭数据库连接 */
+  swDbclose();
+
+  /* 关闭邮箱连接 */
+  ilRc = qdetach();
+  if(ilRc < 0)
+  {
+    swVdebug(0,"S0570: [错误/邮箱] 关闭邮箱连接错误,错误码=[%d]",ilRc);
+    exit(FAIL);
+  }
+
+  exit(sig);
+
+}
+
+/**************************************************************
+ ** 函数名      : swGettime
+ ** 功  能      : 取系统时间
+ ** 作  者      : qh
+ ** 建立日期    : 2006/12/27
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : date   日期
+ **             : time   时间
+ ** 返回值      : int     
+***************************************************************/
+int swGettime(char ret_date[20],char rettime[9])
+{
+  time_t nowtime;
+  struct tm *timestruct;
+  char retdate[11];
+  time(&nowtime);
+  timestruct = localtime(&nowtime);
+  
+  memset(retdate,  0x00,  sizeof(retdate));
+  memset(rettime,  0x00,  sizeof(rettime));
+  
+  sprintf(retdate,"%d-%02d-%02d",timestruct->tm_year+1900,timestruct->tm_mon+1,timestruct->tm_mday);
+  sprintf(rettime,"%02d.%02d.%02d",timestruct->tm_hour,timestruct->tm_min,timestruct->tm_sec);
+  sprintf(ret_date,"%s-%s",retdate,rettime);
+  return 0;
+}
+
+/**************************************************************
+ ** 函数名      : swChar_replce
+ ** 功  能      : 字符替换
+ ** 作  者      : qh
+ ** 建立日期    : 2007/01/19
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : org_str   原字符串
+ **             : org_ch    原字符
+ **             : des_ch    目标字符
+ ** 返回值      : int     
+***************************************************************/
+int str_replace(char org_str[32],char org_ch,char des_ch)
+{
+  char *p;
+  p = strchr(org_str,org_ch);
+  while(*p != '\0')
+  {
+    if(*p == org_ch)
+      *p = des_ch;
+    p++;
+  }
+
+  return 0;
+}

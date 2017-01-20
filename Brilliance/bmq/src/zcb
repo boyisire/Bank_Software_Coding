@@ -1,0 +1,8 @@
+make clean
+>bmqcsapi.c
+>bmqcss.c
+>bmqcss_sndtest.c
+
+make libbmqcsapi.a
+make bmqcss
+make bmqcss_sndtest

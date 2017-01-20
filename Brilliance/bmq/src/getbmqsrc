@@ -1,0 +1,6 @@
+ftp -n $SWMAKEIP<<!!!
+user bmq $SWMAKEPWD
+asci
+get $1
+quit
+!!!

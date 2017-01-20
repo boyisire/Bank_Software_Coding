@@ -1,0 +1,4 @@
+ROUTEDESC=网银外币发起交易
+[ROUTE]
+5 SET direction=1
+10 SEND MSGHEAD(iBegin_q_id) WITH END

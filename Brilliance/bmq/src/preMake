@@ -1,0 +1,124 @@
+
+CFLAGS=$3
+INCLUDE=$4
+CC=cc
+
+BND=$SWITCH_DIR/bnd
+
+if [ "$1" = "dbc" ]
+then
+  if [ "$SWMAKEMODE" = "ftp" ]
+  then
+    > $5.dbc
+    ./getsrc $5.dbc
+  fi
+
+  if [ -s $5.dbc ]
+  then
+
+    case $2 in
+    db2_linux)
+      swPreproc "<DB_ORACLE><DB_POSTGRESQL><DB_INFORMIX><DB_SYBASE>" $5.dbc $5.sqc
+      db2 connect to switch user switch using switch
+      db2 prep $5.sqc BINDFILE ISOLATION UR
+      db2 bind $5.bnd
+      $CC $CFLAGS -o $5.o $INCLUDE $5.c
+      db2 connect reset
+      db2 terminate
+
+      if [ "$SWMAKEMODE" = "ftp" ]
+      then
+        > $5.dbc
+      fi
+
+      mv $5.bnd $BND
+      rm $5.c
+      rm $5.sqc
+      ;;
+
+    ora_aix|ora_linux|ora_sco)
+      PROCPLSFLAGS=$6
+      ORA_INCLUDE=$7
+      swPreproc "<DB_DB2><DB_POSTGRESQL><DB_INFORMIX><DB_SYBASE>" $5.dbc $5.pc
+      proc $PROCPLSFLAGS $ORA_INCLUDE iname=$5.pc
+      $CC $CFLAGS -o $5.o $INCLUDE $5.c
+
+      if [ "$SWMAKEMODE" = "ftp" ]
+      then
+        > $5.dbc
+      fi
+
+      rm $5.c
+      rm $5.pc
+      ;;
+
+    inf_sco)
+      swPreproc "<DB_ORACLE><DB_DB2><DB_POSTGRESQL><DB_SYBASE>" $5.dbc $5.ec
+      esql $CFLAGS -o $5.o $INCLUDE $5.ec
+
+      if [ "$SWMAKEMODE" = "ftp" ]
+      then
+        > $5.dbc
+      fi
+
+      rm $5.c 
+      rm $5.ec
+      ;;
+
+    syb_linux|syb_aix)
+      swPreproc "<DB_ORACLE><DB_POSTGRESQL><DB_INFORMIX><DB_DB2>" $5.dbc $5.cp
+      cpre -I $INCLUDE $5.cp
+      $CC $CFLAGS -o $5.o $INCLUDE $5.c
+
+      if [ "$SWMAKEMODE" = "ftp" ]
+      then
+        > $5.dbc
+      fi
+
+      rm $5.c 
+      rm $5.cp
+      ;;
+
+    *)
+      echo "preMake: can't matching $2 ! "
+      exit 1
+      ;;
+    esac
+
+  else
+    if [ -f $5.o ]
+    then :
+    else
+      echo "preMake: $5.dbc is null, please check $5.dbc !"
+      exit 1
+    fi
+  fi
+elif [ "$1" = "c" ]
+then
+
+  if [ "$SWMAKEMODE" = "ftp" ]
+  then
+    > $5.c
+    ./getsrc $5.c
+  fi
+
+  if [ -s $5.c ]
+  then
+    $CC $CFLAGS -o $5.o $INCLUDE $5.c
+
+    if [ "$SWMAKEMODE" = "ftp" ]
+    then
+      > $5.c
+    fi
+
+  else
+    if [ -f $5.o ]
+    then :
+    else
+      echo "preMake: $5.c is null, please check $5.c !"
+      exit 1
+    fi
+  fi
+else
+  echo "preMake: file type error '$1'" 
+fi

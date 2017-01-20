@@ -1,0 +1,5 @@
+ROUTEDESC=网银对账文件前端通知
+[ROUTE]
+#10 SET direction=1          # 前端发起
+20 CALL 98 WITH REVMODE 1
+30 SEND 24 WITH END

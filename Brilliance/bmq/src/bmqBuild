@@ -1,0 +1,38 @@
+if [ "$1" = "-f" ]
+then
+  shift
+
+  export SWMAKEMODE=ftp
+
+  #create null file
+  if [ "$*" = "" -o "$*" = "all" ]
+  then
+
+    > bmqapi.c
+    > bmqChgDebug.c
+    > bmqclapi.c
+    > bmqclean.c
+    > bmqcls.c
+    > bmqGrp_rcv.c
+    > bmqGrp_snd.c
+    > bmqLicense.c
+    > bmqmgr.c
+    > bmqmng.c
+    > bmqSetload.c
+    > bmqshutdown.c
+    > bmqstartup.c
+    > bmqwinapi.c
+    > getlicense.c
+
+  else
+
+    for params
+    do
+      > $params.c
+    done
+
+  fi
+
+fi
+
+make $*

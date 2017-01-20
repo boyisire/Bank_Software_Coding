@@ -1,0 +1,16 @@
+FMTDESC=电子渠道请求客户信息-公共应答
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 SET trancode = GETVALUE(/root/pub/trancode)
+20 SET trandate = GETVALUE(/root/pub/trandate)
+30 SET traceno = GETVALUE(/root/pub/traceno)
+40 SET retcode = GETVALUE(/root/pub/retcode)
+50 SET CUSID = GETVALUE(/root/pri/CUSID)
+60 SET SJHMFLAG = GETVALUE(/root/pri/SJHMFLAG)
+70 SET ZHKHFLAG = GETVALUE(/root/pri/ZHKHFLAG)
+80 SET FJZHFLAG = GETVALUE(/root/pri/FJZHFLAG)
+90 SET QDBMFLAG = GETVALUE(/root/pri/QDBMFLAG)
+100 SET ZJHMFLAG = GETVALUE(/root/pri/ZJHMFLAG)
+110 SET tranid = GETVALUE(/root/pub/tranid)

@@ -1,0 +1,3 @@
+ROUTEDESC=信用卡ivr本地交易
+[ROUTE]
+10 SEND 25 WITH END

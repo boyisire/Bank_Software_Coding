@@ -1,0 +1,21 @@
+FMTDESC=电子银行-客户号及密码状态信息查询-应答
+TRANTYPE=104
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+# 电子银行-客户号查询 应答
+10 FIELD 1 = ADDNODE( /root, pub, SPACE(0))
+20 FIELD 2 = ADDNODE( /root, pri, SPACE(0))
+# 增加结点:pub
+
+30 FIELD 3 = ADDNODE( /root/pub,channel,FML(channel))
+
+
+40 FIELD 4 = ADDNODE( /root/pub,trancode,200002)
+
+240 FIELD 23 = ADDNODE( /root/pri,SJHM,FML(SJHM)) # 手机号码 
+
+990 DO XMLDUMP()
+1000 DO XMLFREE()

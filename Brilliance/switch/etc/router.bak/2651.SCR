@@ -1,0 +1,5 @@
+ROUTEDESC=柜台-加办,撤办交易发往后台
+[ROUTE]
+#发往 后台 邮箱
+100 CALL FML(PTMB)
+200 SEND 266 WITH END

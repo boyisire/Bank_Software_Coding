@@ -1,0 +1,10 @@
+FMTDESC=根据证件信息查询客户号-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+20 SET trancode = GETVALUE(/root/pub/trancode)
+70 SET VALUE = MOD(HASH(GETVALUE(/root/pri/KHH)),1024)
+1000 DO XMLFREE()

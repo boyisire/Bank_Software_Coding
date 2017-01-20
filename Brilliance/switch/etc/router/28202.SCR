@@ -1,0 +1,10 @@
+ROUTEDESC=柜台-注册客户相关信息
+[ROUTE]
+#如果请求解包后就发现有错误,不继续交易的,置错误标志为1
+10 IF NOT(SEQ(FML(ROUTEFLAG),00000000)) THEN GOTO 200
+
+#发送客管系统
+100 CALL 124 WITH REVMODE 1
+
+
+200 SEND 27 WITH END

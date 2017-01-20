@@ -1,0 +1,9 @@
+ROUTEDESC=网银柜台-保险信息校验
+[ROUTE]
+10 IF NOT(SEQ(FML(PTERRFLAG),0)) THEN GOTO 450  #如果请求解包后就发现有错误,不继续交易的,置错误标志为1
+100 CALL 75 WITH  REVMODE 1                         #转发保险系统
+120 IF SEQ(FML(retcode),00) THEN GOTO 500       #网银返回成功,返回柜台
+200 SET ERRSTEP=2                               #网银返回了失败信息
+300 SEND 133 WITH END
+450 SET ERRSTEP=1																#柜台解包程序校验数据就发生失败的,置错误标志为1
+500 SEND 133 WITH END

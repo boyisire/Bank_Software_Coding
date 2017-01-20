@@ -1,0 +1,3 @@
+ROUTEDESC=信用卡向电视银行发起交易
+[ROUTE]
+10 SEND 235 WITH END

@@ -1,0 +1,10 @@
+ROUTEDESC=柜台-电子银行汇易达助农取款商户申请撤销等
+[ROUTE]
+#如果请求解包后就发现有错误,不继续交易的,置错误标志为1
+10 IF NOT(SEQ(FML(ROUTEFLAG),00000000)) THEN GOTO 1000    
+
+#发送手机银行
+100 CALL 271 WITH REVMODE 1	
+
+#给柜面应答
+1000 SEND 282 WITH END

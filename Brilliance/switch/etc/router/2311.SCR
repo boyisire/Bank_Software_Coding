@@ -1,0 +1,3 @@
+ROUTEDESC=个人网银本地交易
+[ROUTE]
+10 SEND 24 WITH END

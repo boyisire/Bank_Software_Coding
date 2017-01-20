@@ -1,0 +1,5 @@
+ROUTEDESC=电话银行全国中间业务
+[ROUTE]
+20 SET retcode = 0000
+30 SET KHBH = FML(KHBH)
+40 SEND MSGHEAD(iBegin_q_id) WITH END

@@ -1,0 +1,9 @@
+FMTDESC=电子渠道请求客户信息-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+20 SET trancode = FML(PCODE)
+21 SET CUSID = GETVALUE(/root/pri/KHH)
+22 SET VALUE1 = MOD(HASH(GETVALUE(/root/pri/KHH)),1024)
+

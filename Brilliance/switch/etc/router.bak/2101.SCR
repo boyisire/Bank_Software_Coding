@@ -1,0 +1,3 @@
+ROUTEDESC=电话银行人工座席本地交易
+[ROUTE]
+10 SEND 21 WITH END

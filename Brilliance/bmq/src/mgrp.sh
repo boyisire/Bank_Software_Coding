@@ -1,0 +1,2 @@
+make bmqGrp_rcv_comm
+make bmqGrp_rcv_front

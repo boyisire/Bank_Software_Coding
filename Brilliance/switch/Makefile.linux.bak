@@ -1,0 +1,66 @@
+#include $(ORACLE_HOME)/precomp/lib/env_precomp.mk
+
+PROCPLSFLAGS= parse=NONE lines=y
+ORA_CLIENT_LIB=shared
+DBLIBS=$(ORACLE_HOME)/lib -lclntsh -lm 
+ORA_INCLUDE=include=$(SWITCH_DIR)/inc include=$(ORACLE_HOME)/precomp/public include=$(ORACLE_HOME)/rdbms/public include=$(ORACLE_HOME)/rdbms/demo include=$(ORACLE_HOME)/plsql/public include=$(ORACLE_HOME)/network/public include=$(HOME)/pl/src/province
+
+INCLUDE=-I$(SWITCH_DIR)/inc -I$(ORACLE_HOME)/precomp/public -I$(ORACLE_HOME)/precomp/public -I$(ORACLE_HOME)/rdbms/public -I$(ORACLE_HOME)/rdbms/demo -I$(ORACLE_HOME)/plsql/public -I/usr/include/libxml2 -I$(BMQ_PATH)/inc -I$(HOME)/pl/inc -I$(HOME)/pl/src/public -I$(HOME)/pl/src/hashindex -I$(HOME)/pl/src/province -I$(HOME)/pl/src/shm  -I$(HOME)/tp/inc -I$(HOME)/mb/inc -I$(HOME)/nb/inc -I$(HOME)/mac/inc -I$(HOME)/tb/inc  -I$(HOME)/bs/inc -I$(HOME)/och/inc -I$(TUXDIR)/include -I$(HOME)/ieb/inc -I ./
+
+CFLAGS=-Wall  -fPIC  -c $(DEBUGFLAGS) -DONLY_SHM_SUPPORTED  -pg -DNOT_HAVE_TAS
+#CFLAGS=-Wall -pedantic -fPIC  -c $(DEBUGFLAGS) -DONLY_SHM_SUPPORTED  -pg -DNOT_HAVE_TAS
+
+#CFLAGS=-Wall  -fPIC  -c $(DEBUGFLAGS) 
+SHAREDFLAGS=$(CFLAGS) -fPIC -shared
+BITFLAG=-m64
+
+PROCPLSFLAGS= sqlcheck=syntax mode=oracle dbms=v8 unsafe_null=yes parse=none lines=yes
+
+OL_DIR=/app/switch/code
+TIBEMSLIBPATH=$(HOME)/thirdlib/tibco_ems
+TIBEMSLIB=$(TIBEMSLIBPATH)/lib
+TIBEMSINC=$(TIBEMSLIBPATH)/inc
+OT_DBG_FLAGS = -g
+
+TLIBS=-lpthread
+TIBEMS_LIB64=-ltibems64 -ltibemslookup64
+TIBEMSADMIN_LIB64=-ltibemsadmin64
+TIBEMS_SSL_LIB64=-lssl -lcrypto
+TIBEMS_LDAP_LIB64=-lldap -llber
+TIBEMS_XML_LIB64=-lxml2
+TIBEMS_ZLIB64=-lz
+
+EMSLIBS= -L$(TIBEMSLIB)/64 -L$(TIBEMSLIB) $(TIBEMS_LIB64) $(TIBEMSADMIN_LIB64) $(TIBEMS_LDAP_LIB64) $(TIBEMS_XML_LIB64) $(TIBEMS_SSL_LIB64) $(TIBEMS_ZLIB64) $(TLIBS)
+
+
+PLPATH=$(HOME)/pl
+SHMAPPLIBS=-L$(PLPATH)/lib -lm -lshmpub -lbswconndb  -lbswPublic
+APIHASHLIBS=-L$(PLPATH)/lib -lhashindex
+SYSDBLIBS=-L$(ORACLE_HOME)/lib -lclntsh
+PLSHMLIBS=-L$(PLPATH)/lib  -lshmpub
+
+
+SYSLIBS=-lpthread -lcrypto
+BMQLIB=-L$(BMQ_PATH)/lib -lbmqapi
+APPLIBS=-L$(SWITCH_DIR)/lib -lusrfun -lmqapi -lswapi -lxml2
+APILIBS=-L$(SWITCH_DIR)/lib -lswapi 
+PLLIBS=-L$(HOME)/pl/lib -lPlSec -lPlPub -lPlCom $(SHMAPPLIBS) $(APIHASHLIBS) 
+PLBIN=$(HOME)/pl/bin
+TUXAPPLIBS=-L$(SWITCH_DIR)/lib -lusrfuntuxpb -lmqapi -lswapi -lxml2
+
+
+SRC=$(SWITCH_DIR)/src
+BND=$(SWITCH_DIR)/bnd
+OBJ=$(SWITCH_DIR)/obj
+LIB=$(SWITCH_DIR)/lib
+EXE=$(SWITCH_DIR)/bin
+ETC=$(SWITCH_DIR)/etc
+TMP=$(SWITCH_DIR)/tmp
+
+AR=ar
+
+ESQL=proc
+CC=gcc
+#CC=cc -g
+
+.SUFFIXES:   .sqc .dbc .pc .c .o

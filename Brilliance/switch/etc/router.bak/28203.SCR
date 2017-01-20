@@ -1,0 +1,3 @@
+ROUTEDESC=柜台-电话银行转账汇款账户维护
+[ROUTE]
+10 SEND 27 WITH END

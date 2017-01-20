@@ -1,0 +1,90 @@
+/****************************************************************/
+/* 模块编号    ：TranidTmp                                      */
+/* 模块名称    ：流水号定时缓存模块                             */
+/* 版 本 号    ：V1.0.0                                         */
+/* 作	 者    ：陈继辉                                         */
+/* 建立日期    ：2014/12/20                                     */
+/* 最后修改日期：2014/12/20                                     */
+/* 模块用途    ：用于定时缓存流水号到文件                       */
+/* 本模块中包含如下函数及功能说明：                             */
+/*			 （1）int main();                                   */
+/****************************************************************/
+
+/****************************************************************/
+/* 修改记录:                                                    */
+/*  2014.12.20 创建                                             */
+/****************************************************************/
+#include "switch.h"
+#include "swShmGroup.h"
+EXEC SQL INCLUDE sqlca;
+#ifdef DB_ORACLE
+EXEC SQL INCLUDE "swDbstruct.h";        
+#endif
+#include "swNdbstruct.h"
+#include "swShm.h"
+
+int main(int argc, char **argv)
+{
+	int ilShmid;
+	long ltranid;
+	char *alShmtmp_d;
+	FILE *fp;
+    int time; //间隔时间
+	
+	/* 设置调试程序名称 */
+	memset(agDebugfile,0x00,sizeof(agDebugfile));
+	strcpy(agDebugfile,"swTranidTmp.debug");
+	
+	/* 取得DEBUG标志 */
+	if ((cgDebug = _swDebugflag("swInit")) == FAIL)
+	{
+		printf("无法取得DEBUG标志!\n");
+		exit(FAIL);
+	}
+	swVdebug(2,"S0000: 取Debug标志ok!");
+	
+    if((fp = fopen("/home/switch/switch/etc/config/SWBUFSPE.CFG","r"))==NULL)
+    {
+        printf("打开配置文件失败\n");
+        exit(FAIL);
+    }
+    fscanf(fp,"%d",&time);
+	swVdebug(1,"S0010:间隔时间time[%d]",time);
+    fclose(fp); 
+	while(1)
+	{
+		/* 读系统参数表[swt_sys_config] */
+		if(swInitcfgload(&sgSwt_sys_config) != SUCCESS)
+		{
+			swVdebug(1,"S0020:ERROR读系统参数表swt_sys_config出错");
+			exit(FAIL);
+		}
+		swVdebug(1,"S0030:读取参数表成功");
+		
+		ilShmid = shmget((key_t)sgSwt_sys_config.iShmkey,0,IPC_EXCL|0666);
+		if(ilShmid < 0)
+		{
+			printf("联接动态表共享内存失败\n");
+			swVdebug(1,"S0040:ERROR联接动态表共享内存失败");
+			exit(FAIL);
+		}
+		
+		if((alShmtmp_d = shmat(ilShmid,(char *)0,SHM_RND)) == (char *)-1)
+		{
+			swVdebug(1,"S0050:ERROR联接动态表共享内存失败");
+			exit(FAIL);
+		} 
+		swVdebug(1,"S0060:连接共享内存成功!");
+		
+		psgShmidx_d = (struct shmidx_d *)alShmtmp_d;
+		ltranid = psgShmidx_d->lTranid;
+		swVdebug(1,"S0070:共享内存流水号tranid[%ld]",ltranid);
+		fp=fopen("/home/switch/switch/tmp/tranid.ini","w");    // 打开文件
+		fprintf(fp,"%ld",ltranid);
+        fclose(fp);
+		sleep(time);
+		swVdebug(1,"S0080:————————————————————————");
+	}
+	
+	exit(SUCCESS);
+}

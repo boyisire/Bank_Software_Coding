@@ -1,0 +1,1107 @@
+/****************************************************************/
+/* Ä£¿é±àºÅ    £ºswDb_Ora                                       */ 
+/* Ä£¿éÃû³Æ    £ºDB2Êý¾Ý¿â²Ù×÷                                  */
+/* ×÷    Õß    £ºszy                                            */
+/* ½¨Á¢ÈÕÆÚ    £º2001.3.14                                      */
+/* ×îºóÐÞ¸ÄÈÕÆÚ£º2001/10/25                                     */
+/* Ä£¿éÓÃÍ¾    £ºÖÇÄÜ»¯Â·ÓÉÄ£¿é                                 */
+/* ±¾Ä£¿éÖÐ°üº¬ÈçÏÂº¯Êý¼°¹¦ÄÜËµÃ÷£º                             */
+/*                     £¨1£©void main();                        */
+/*                     £¨2£©void swQuit();                      */
+/*                     £¨3£©int  swPresql();                    */
+/*                     £¨4£©int  swExstr();                     */
+/*                      (5) int alloc_descriptors()             */
+/*                      (6) int process_select_list()           */
+/*                      (7) int set_bind_variables              */   
+/*                      (8) void free_sqlda()                   */
+/****************************************************************/
+
+/* Êý¾Ý¿â¶¨Òå */
+#include <sqlca.h>
+#include <sqlda.h>
+EXEC SQL INCLUDE sqlca;
+EXEC SQL INCLUDE sqlda;
+
+/* switch¶¨Òå */
+#include "switch.h" 
+
+/* ³£Á¿¶¨Òå */
+#define   cSQLSELECT  'S'
+#define   cSQLUPDATE  'U'
+#define   cSQLINSERT  'I'
+#define   cSQLDELETE  'D'
+#define   cSQLOPEN    'O'
+#define   cSQLFETCH   'F'
+#define   cSQLCLOSE   'C'
+
+/* ÁÐµÄ×î´óÊýÄ¿»òËÞÖ÷±äÁ¿µÄ×î´ó¸öÊý*/
+#define MAX_ITEMS         40
+/* ÁÐÃûµÄ×î´ó³¤¶È»òÖ¸Ê¾·ûµÄ×î´ó³¤¶È*/
+#define MAX_VNAME_LEN     30
+#define MAX_INAME_LEN     30
+#ifndef NULL
+#define NULL  0
+#endif
+
+#ifndef DB_ORACLE
+#define DB_ORACLE
+#endif
+/* ±äÁ¿¶¨Òå */
+/* º¯ÊýÔ­ÐÍ¶¨Òå */
+extern SQLDA *sqlald();
+extern void sqlnul();
+
+int swPresql(char *,char *,char p[][101] ,short *,char *); 
+int swExstr(char *,char *);
+int alloc_descriptors(SQLDA ** ,int ,int ,int );
+int process_select_list(char *,SQLDA *);
+int set_bind_variables(char *,SQLDA *);
+void swQuit(int);
+void free_sqlda(SQLDA *);
+
+main(int argc,char *argv[])
+{
+  FILE    *fp;                 /* ÎÄ¼þÖ¸Õë */
+  short   i,j,rownum;          /* ÁÙÊ±¼ÆÊý±äÁ¿ */
+  int     ilRc;                /* ·µ»ØÂë 0-³É¹¦ ·Ç0-²»³É¹¦ */
+  short   ilOrgqid=0;          /* Ô´·¢ÓÊÏäºÅ */
+  short   ilReadSize;          /* ¶Áµ½µÄ³¤¶È */
+  short   ilPriority;          /* ÐÅÏä²ÎÊý:ÓÅÏÈ¼¶ */
+  short   ilClass;             /* ÐÅÏä²ÎÊý:Àà±ð */
+  short   ilType;              /* ÐÅÏä²ÎÊý:ÀàÐÍ */
+  short   ilResultlen;         /* ±í´ïÊ½¼ÆËã½á¹û³¤¶È */
+  short   ilFldlen;            /* Óò³¤ */
+  short   ilFldnum=0;          /* ÓòÃû */
+  short   ilDb_id;             /* Êý¾Ý¿âID */
+  char    buffer[4096];
+  char    c;
+  char    alSqlcode[10 + 1];
+  char    alSqlnrows[10 + 1];
+  char    alFldname[iFLDNAMELEN + 1];
+  char    palSqlval[100][100 + 1];
+  char    alDb_name[21];       /* Êý¾Ý¿âÃû */
+  char    alUsrname[20];
+  char    alPassword[20];
+  char    cSqlflag;            /* SQLÓï¾ä±êÊ¶ */
+  char    alCur[21];           /* ÓÎ±êÃû */
+  char    alBuf[1024];
+  char    alFilename[31];      /* ÎÄ¼þÃû */
+  char    alOffset[11];        
+  char    alSelectresult[1024]; 
+  char    *alPos;
+  long    llOffset; 
+  long    llTranid;            /* ½»Ò×Á÷Ë®ºÅ */
+  struct  msgpack  slMsgpack;  /* ±¨ÎÄ¶¨Òå */
+  SQLDA   *bind_dp;
+  SQLDA   *select_dp;
+
+  /* Êý¾Ý¿â±äÁ¿¶¨Òå */
+  EXEC SQL BEGIN DECLARE SECTION;
+    char   alSqlstr[1024 + 1];
+    char   alSqltext[1024 + 1];
+    char   alSql[1024 + 1];
+    VARCHAR   username[21];
+    VARCHAR   password[21]; 
+  EXEC SQL END DECLARE SECTION;
+
+  /* ´òÓ¡°æ±¾ºÅ */
+  if (argc > 1)
+    _swVersion("swDb Version 4.3.0",argv[1]);
+
+  /* LICENSE */
+  if (_swLicense("swDb")) exit(FAIL);
+
+  if(argc < 3) 
+  {
+    fprintf(stderr,"Ê¹ÓÃ·½·¨:\nswDb_Ora {[-i ID] [-n database_name] [-u username -p password] [-d cgDebug]}\n");
+    exit(-1);
+  }
+  /* ÉèÖÃµ÷ÊÔ³ÌÐòÃû³Æ */
+  strcpy(agDebugfile, "swDb_Ora.debug");
+  /* Í¨¹ýÃüÁîÐÐÈ¡µÃÊý¾Ý¿âID£¬Êý¾Ý¿âÃû */
+  while((c=getopt(argc,argv,"i:n:d:u:p:"))!=-1) 
+  {
+    switch( c )
+    {
+      case 'i':
+        ilDb_id=atoi(optarg);
+        break;
+      case 'n':
+        strcpy(alDb_name,optarg);
+        break;
+      case 'd':
+        cgDebug=atoi(optarg);
+        break;
+      case 'u':
+        strcpy(alUsrname,optarg);
+        break;
+      case 'p':
+        strcpy(alPassword,optarg);
+        break;
+      default:
+        break;
+    }
+  }     /* end while */
+
+  /* ºöÂÔSIGCLD¡¢SIGINT¡¢SIGQUIT¡¢SIGHUP ÐÅºÅ */
+  signal( SIGTERM , swQuit  );
+  signal( SIGINT  , SIG_IGN );
+  signal( SIGQUIT , SIG_IGN );
+  signal( SIGTSTP , SIG_IGN );
+  signal( SIGHUP  , SIG_IGN );
+
+  swVdebug(2,"S0010: ºöÂÔSIGCLD¡¢SIGINT¡¢SIGQUIT¡¢SIGHUP ÐÅºÅ");
+  
+  /* ¶¨Î»±¾µØÓÊÏä */
+  if(qattach(iMBDBSQL))
+  {
+    swVdebug(0,"S0020: ³õÊ¼»¯ÓÊÏä³ö´í!");
+    exit(FAIL);
+  }
+  swVdebug(2,"S0030: ¶¨Î»±¾µØÓÊÏä³É¹¦");
+  
+  /* ´ò¿ªÊý¾Ý¿â */
+  #ifdef DB_ORACLE
+    memset(alSqltext,0,sizeof(alSqltext));
+    strcpy((char *)username.arr,alUsrname);
+    username.len = strlen((char *)username.arr);
+    strcpy((char *)password.arr,alPassword);
+    password.len = strlen((char *)password.arr);
+    EXEC SQL CONNECT :username IDENTIFIED BY :password;
+    if (sqlca.sqlcode)
+    {
+      swVdebug(0,"S0040: [´íÎó/Êý¾Ý¿â] Êý¾Ý¿âÁ¬½Ó´íÎó[%d]",sqlca.sqlcode);
+      exit(FAIL);
+    }
+    swVdebug(2,"S0050:Á¬½ÓÊý¾Ý¿â³É¹¦");
+
+    for( ; ; ) 
+    {
+/* for test by zjj 
+      printf("\n:ÇëÊäÈë¶¯Ì¬SQLÓï¾ä(»Ø³µÍË³ö³ÌÐò):\n");
+      fgets(alSqlstr,sizeof(alSqlstr),stdin);
+      _swTrim(alSqlstr);
+      if (alSqlstr[0] == '\0') 
+      {
+        printf("³ÌÐòÍË³ö\n");
+        return 0;
+      }
+end test  by zjj  */
+      /* ´ÓÊý¾Ý¿âÓÊÏä¶ÁÈëTypeÎªÊý¾Ý¿âIDµÄ±¨ÎÄ */ 
+      ilReadSize = iMSGMAXLEN;
+      ilPriority = 0;
+      ilClass = 0;
+      ilType = ilDb_id;
+      if((ilRc = qread2((char *)&slMsgpack, &ilReadSize, &ilOrgqid,
+        &ilPriority,&ilClass,&ilType)) != SUCCESS ) 
+      {
+        swVdebug(1,"S0060: ¶ÁÓÊÏä³ö´í");
+        swMberror(ilRc, NULL);
+        swQuit(FAIL);
+      }
+      swVdebug(2,"S0070: ´ÓÓÊÏä¶ÁÈ¡±¨ÎÄ OK !");
+      /* ÅÐ¶Ï±¨ÎÄ¸ñÊ½ÀàÐÍÊÇ·ñÎªÄÚ²¿¸ñÊ½±¨ÎÄ */ 
+      if (slMsgpack.sMsghead.iMsgformat != iFMTIMF ) 
+      {
+        /* ±¨ÎÄÍ·.±¨ÎÄ¸ñÊ½ÀàÐÍ ²»Îª <FMLÄÚ²¿±¨ÎÄ¸ñÊ½> */
+        swVdebug(1,"S0080: ±¨ÎÄ¸ñÊ½ÀàÐÍ²»ÎªFML±¨ÎÄ¸ñÊ½");
+        _swMsgsend( 303004, NULL );
+        continue;
+      }
+      if (cgDebug >= 2) swDebugfml((char *)&slMsgpack);
+      /* ½«±¨ÎÄÖÐIMF¸÷Óò·Ö½âÖÁFML±äÁ¿Ô¤½â³Ø£¨µ÷Ô¤½âIMF¸ñÊ½º¯Êý£©ÖÐ */
+      ilRc = swFmlunpack( slMsgpack.aMsgbody,slMsgpack.sMsghead.iBodylen, 
+        psgPreunpackbuf );
+      if ( ilRc == FAIL )
+      {
+        /* ½âIMF³ö´í */
+        swVdebug(1,"S0090: ´íÎó:FML±¨ÎÄ½â°ü³ö´í!");
+        _swMsgsend( 399001, NULL ); 
+        continue;
+      }
+      swVdebug(2,"S0100: FML±¨ÎÄ½â°ü³É¹¦");
+      /* ´Ó±¨ÎÄÖÐÈ¡³ö _SQLTEXTÓò  */
+      memset(alSqlstr,0x00,sizeof(alSqlstr));
+      ilRc = swFmlget(psgPreunpackbuf,"_SQLTEXT",&ilFldlen,alSqlstr);
+      if (ilRc)
+      {
+        swVdebug(1,"S0110: È¡_SQLTEXTÓò³ö´í");
+        continue;
+      }
+      swVdebug(2,"S0120: È¡_SQLTEXTÓò³É¹¦");
+      /* ½âÎöSQLÓï¾ä */
+      ilRc = swPresql(alSqlstr,alSqltext,palSqlval,&ilFldnum,&cSqlflag);
+      if (ilRc)
+      {
+        swVdebug(1,"S0130: SQLÓï¾ä²»ºÏ·¨");
+        continue;
+      }
+      swVdebug(2,"S0140: ½âÎöSQLÓï¾ä³É¹¦");
+
+      strcpy(alSqlcode,"0");
+      strcpy(alSqlnrows,"0");
+
+      switch( cSqlflag) 
+      {
+        case cSQLSELECT:
+        case cSQLUPDATE:
+        case cSQLINSERT:
+        case cSQLDELETE:
+          /* Îª²éÑ¯ÃèÊö·û·ÖÅä¿Õ¼ä */
+          if (alloc_descriptors(&select_dp,MAX_ITEMS,\
+            MAX_VNAME_LEN, MAX_INAME_LEN) != 0)
+          {
+            swVdebug(1,"S0150: Îª²éÑ¯ÃèÊö·û·ÖÅä¿Õ¼ä³ö´í!");
+            strcpy(alSqlcode,"-1");
+            break;
+          }
+          /* ÉèÖÃ²éÑ¯ÃèÊö·û×î¶àÄÜ¹»ÃèÊöµÄÑ¡ÔñÁÐ±íÊý */
+          select_dp->N = MAX_ITEMS;
+          swVdebug(2,"S0160: Îª²éÑ¯ÃèÊö·û·ÖÅä¿Õ¼ä³É¹¦!");
+          /* Îª½áºÏÃèÊö·û·ÖÅä¿Õ¼ä */
+          if (alloc_descriptors(&bind_dp,MAX_ITEMS,\
+            MAX_VNAME_LEN, MAX_INAME_LEN) != 0)
+          {
+            swVdebug(1,"S0170: Îª½áºÏÃèÊö·û·ÖÅä¿Õ¼ä³ö´í!");
+            strcpy(alSqlcode,"-1");
+            break;
+          }                
+          bind_dp->N = MAX_ITEMS;
+          swVdebug(2,"S0180: Îª½áºÏÃèÊö·û·ÖÅä¿Õ¼ä³É¹¦!"); 
+          /* ×¼±¸Óï¾ä */
+          EXEC SQL PREPARE dosql1 FROM :alSqltext;
+          if (sqlca.sqlcode < 0 )
+          {
+            swVdebug(1,"S0190: [´íÎó/Êý¾Ý¿â] ×¼±¸Óï¾ä[%s],sqlcode = [%d], %.70s", alSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            if (cSqlflag != cSQLSELECT) EXEC SQL ROLLBACK;
+            break;      
+          }
+          swVdebug(2,"S0200: ×¼±¸Óï¾ä[%s]ok!",alSqltext);
+          /*ÎªÓï¾äÉùÃ÷ÓÎ±ê*/
+          EXEC SQL DECLARE cur1 CURSOR FOR dosql1;
+          if (sqlca.sqlcode < 0 )
+          {
+            swVdebug(1,"S0210: [´íÎó/Êý¾Ý¿â] ÉêÃ÷ÓÎ±ê[%s]£¬sqlcode = [%d], %.70s",\
+              alSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            if (cSqlflag != cSQLSELECT) EXEC SQL ROLLBACK;
+            break;      
+          }          
+          swVdebug(2,"S0220: ÉêÃ÷ÓÎ±ê³É¹¦!");
+          /*ÉèÖÃ½áºÏÃèÊö·ûµÄÐÅÏ¢*/
+          ilRc = set_bind_variables(alSqltext,bind_dp);
+          if (ilRc !=0)
+          {
+            swVdebug(2,"S0230: [´íÎó/º¯Êýµ÷ÓÃ] set_bind_variables(),·µ»ØÂë=[%d]",ilRc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            if (cSqlflag != cSQLSELECT) EXEC SQL ROLLBACK;
+            break;             
+          }
+          swVdebug(2,"S0240: ÉèÖÃ½áºÏÃèÊö·ûµÄÐÅÏ¢OK!");
+          /* Ê¹ÓÃ½áºÏÃèÊö·û´ò¿ªÓÎ±ê */
+          EXEC SQL OPEN cur1 USING DESCRIPTOR bind_dp;
+          if (sqlca.sqlcode < 0 )
+          {
+            swVdebug(1,"S0250: [´íÎó/Êý¾Ý¿â] Ê¹ÓÃ½áºÏÃèÊö·û´ò¿ªÓÎ±ê[%s]£¬sqlcode = [%d], %.70s",\
+              alSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            if (cSqlflag != cSQLSELECT) EXEC SQL ROLLBACK;
+            break;      
+          }                 
+          swVdebug(2,"S0260: Ê¹ÓÃ½áºÏÃèÊö·û´ò¿ªÓÎ±ê³É¹¦!");
+          if (cSqlflag == cSQLSELECT)
+          {
+            /*»ñµÃ²éÑ¯ÃèÊö·ûÐÅÏ¢*/
+            ilRc = process_select_list(alSqltext,select_dp);
+            if (ilRc !=0)
+            {
+              swVdebug(2,"S0270: [´íÎó/º¯Êýµ÷ÓÃ] process_select_list(),·µ»ØÂë=[%d]",ilRc);
+              sprintf(alSqlcode,"%d",sqlca.sqlcode);
+              break;             
+            }
+            swVdebug(2,"S0280: È¡µÃ²éÑ¯ÃèÊö·ûÐÅÏ¢³É¹¦!");
+            EXEC SQL WHENEVER NOT FOUND DO BREAK;  
+            /* ×éÖ¯Êý¾Ý */
+            rownum = 0;
+            for (;;) 
+            {
+              /* ´ÓÊý¾Ý¿âÖÐ½«Ò»ÐÐÊý¾ÝÌáÈ¡³öÀ´ */
+              EXEC SQL FETCH cur1 USING DESCRIPTOR select_dp;
+              for (i = 0; i < select_dp->F; i++)
+              {          	
+              	memset(alBuf,0x00,sizeof(alBuf));
+              	memset(alFldname,0x00,sizeof(alFldname));
+                sprintf(alFldname,"%s#%c",palSqlval[i]+1,rownum+1);  
+                if (*select_dp->I[i] < 0) 
+                  alBuf[0] = '\0';
+                else
+                { 
+                  if (select_dp->T[i] == 3)    /* int Êý¾ÝÀàÐÍ */
+                    sprintf(alBuf,"%d",*(int *)select_dp->V[i]);
+                  else if (select_dp->T[i] == 4)  /* float Êý¾ÝÀàÐÍ */
+                    sprintf(alBuf,"%d",*(float *)select_dp->V[i]);
+                  else
+                    strncpy(alBuf,select_dp->V[i],(int)select_dp->L[i]);
+                }
+                _swTrim(alBuf);
+                ilRc = swFmlset(alFldname,strlen(alBuf), \
+                  alBuf,psgPreunpackbuf);
+                if (ilRc) 
+                {
+                  sprintf(alSqlcode,"FML%d",ilRc);
+                  swVdebug(2,"S0290: FMLSET ±¨ÎÄ³ö´í");
+                  break;
+                }
+              } /* end in for */
+              rownum++;
+            }  /* end out for */
+            if ( rownum > 0 )
+              strcpy(alSqlcode,"0");
+            else
+              sprintf(alSqlcode,"%d",sqlca.sqlcode);
+          }
+          if (cSqlflag != cSQLSELECT) 
+          {
+            sprintf(alSqlnrows,"%d",sqlca.sqlerrd[2]);	
+            EXEC SQL COMMIT WORK;
+          }
+          else
+            sprintf(alSqlnrows,"%d",rownum);
+          /* ÊÍ·Å×ÊÔ´ */
+          free_sqlda(select_dp);
+          free_sqlda(bind_dp);                    
+          EXEC SQL WHENEVER SQLERROR CONTINUE;
+          /* ¹Ø±ÕÓÎ±ê*/
+          EXEC SQL CLOSE cur1;
+          swVdebug(2,"S0300: Ö´ÐÐSQLÓï¾ä[%s]³É¹¦",alSqltext);
+          break;
+        case cSQLOPEN:
+          /* ¶¨ÒåÓÎ±ê */
+          alPos = strstr(alSqltext,"CURSOR");
+          if (!alPos) 
+          {
+            swVdebug(1,"S0310: OPENÓï¾ä¶¨Òå³ö´í");
+            strcpy(alSqlcode,"-1");
+          }
+          strncpy(alCur,alSqltext + 5,alPos -alSqltext -6);
+          alPos = strstr(alSqltext,"SELECT ");
+          if ( !alPos ) 
+          {
+            swVdebug(1,"S0320: OPENÓï¾ä¶¨Òå³ö´í");
+            strcpy(alSqlcode,"-1");
+          }
+          strcpy(alSql,alPos);
+          _swTrim(alSql);
+          /* Îª²éÑ¯ÃèÊö·û·ÖÅä¿Õ¼ä */
+          if (alloc_descriptors(&select_dp,MAX_ITEMS,\
+            MAX_VNAME_LEN, MAX_INAME_LEN) != 0)
+          {
+            swVdebug(1,"S0330: Îª²éÑ¯ÃèÊö·û·ÖÅä¿Õ¼ä³ö´í!");
+            strcpy(alSqlcode,"-1");
+            break;
+          }
+          /* ÉèÖÃ²éÑ¯ÃèÊö·û×î¶àÄÜ¹»ÃèÊöµÄÑ¡ÔñÁÐ±íÊý */
+          select_dp->N = MAX_ITEMS;
+          swVdebug(2,"S0340: Îª²éÑ¯ÃèÊö·û·ÖÅä¿Õ¼ä³É¹¦!");
+          /* Îª½áºÏÃèÊö·û·ÖÅä¿Õ¼ä */
+          if (alloc_descriptors(&bind_dp,MAX_ITEMS,\
+            MAX_VNAME_LEN, MAX_INAME_LEN) != 0)
+          {
+            swVdebug(1,"S0350: Îª½áºÏÃèÊö·û·ÖÅä¿Õ¼ä³ö´í!");
+            strcpy(alSqlcode,"-1");
+            break;
+          }                
+          bind_dp->N = MAX_ITEMS;
+          swVdebug(2,"S0360: Îª½áºÏÃèÊö·û·ÖÅä¿Õ¼ä³É¹¦!");
+          /* ×¼±¸Óï¾ä */
+          EXEC SQL PREPARE dosql1 FROM :alSql;
+          if (sqlca.sqlcode < 0 )
+          {
+            swVdebug(1,"S0370: [´íÎó/Êý¾Ý¿â] ×¼±¸Óï¾ä[%s]£¬sqlcode = [%d], %.70s",\
+              alSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            break;      
+          }          
+          swVdebug(2,"S0380: ×¼±¸Óï¾ä[%s]³É¹¦!",alSql);
+          /*ÎªÓï¾äÉùÃ÷ÓÎ±ê*/
+          EXEC SQL DECLARE cur3 CURSOR FOR dosql1;
+          if (sqlca.sqlcode < 0 )
+          {
+            swVdebug(1,"S0390: [´íÎó/Êý¾Ý¿â] ÉêÃ÷ÓÎ±ê[%s]£¬sqlcode = [%d], %.70s",\
+              alSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            break;      
+          }      
+          swVdebug(2,"S0400: ÎªÓï¾äÉêÃ÷ÓÎ±ê³É¹¦!");
+          /*ÉèÖÃ½áºÏ±äÁ¿ÃèÊö·ûµÄÐÅÏ¢*/
+          ilRc = set_bind_variables(alSql,bind_dp);
+          if (ilRc !=0)
+          {
+            swVdebug(2,"S0410: [´íÎó/º¯Êýµ÷ÓÃ] set_bind_variables(),·µ»ØÂë=[%d]",ilRc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            break;             
+          }
+          swVdebug(2,"S0420: ÉèÖÃ½áºÏ±äÁ¿ÃèÊö·û³É¹¦!");
+          /* Ê¹ÓÃ½áºÏÃèÊö·û´ò¿ªÓÎ±ê */
+          EXEC SQL OPEN cur3 USING DESCRIPTOR bind_dp;
+          if (sqlca.sqlcode < 0 )
+          {
+            swVdebug(1,"S0430: [´íÎó/Êý¾Ý¿â] Ê¹ÓÃ½áºÏÃèÊö·û´ò¿ªÓÎ±ê[%s],sqlcode = [%d], %.70s", alSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            break;      
+          }              
+          swVdebug(2,"S0440: Ê¹ÓÃ½áºÏÃèÊö·û´ò¿ªÓÎ±ê³É¹¦!");
+          /*»ñµÃ²éÑ¯ÃèÊö·ûÐÅÏ¢*/
+          ilRc = process_select_list(alSql,select_dp);
+          if (ilRc !=0)
+          {
+            swVdebug(2,"S0450: [´íÎó/º¯Êýµ÷ÓÃ] process_select_list(),·µ»ØÂë=[%d]",ilRc);
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+            break;             
+          }
+          swVdebug(2,"S0460: È¡µÃ²éÑ¯ÃèÊö·ûÐÅÏ¢³É¹¦!");
+          /* ´´½¨ÃûÎªÓÎ±êÃû.½»Ò×Á÷Ë®ºÅµÄÁÙÊ±ÎÄ¼þ */
+          llTranid=slMsgpack.sMsghead.lTranid;
+          sprintf(alFilename,"%s/tmp/%s.%d",getenv("SWITCH_DIR"),
+            alCur,llTranid);
+          if ((fp = fopen(alFilename,"w")) == NULL) 
+          {
+            swVdebug(1,"S0470: ´´½¨ÁÙÊ±ÎÄ¼þ³ö´í");
+            strcpy(alSqlcode,"-1");
+            break;
+          }
+          swVdebug(2,"S0480: ´´½¨ÁÙÊ±ÎÄ¼þ[%s]",alFilename);
+          EXEC SQL WHENEVER NOT FOUND DO BREAK;
+          /* ×éÖ¯Êý¾Ý */
+          rownum = 0;
+          for (;;)
+          {
+            EXEC SQL FETCH cur3 USING DESCRIPTOR select_dp;
+            for (i = 0; i < select_dp->F; i++)
+            {
+              memset(alBuf,0x00,sizeof(alBuf));
+              if (*select_dp->I[i] < 0) 
+                alBuf[0] = '\0';
+              else
+              { 
+                if (select_dp->T[i] == 3)    /* int Êý¾ÝÀàÐÍ */
+                  sprintf(alBuf,"%d",*(int *)select_dp->V[i]);
+                else if (select_dp->T[i] == 4)  /* float Êý¾ÝÀàÐÍ */
+                  sprintf(alBuf,"%d",*(float *)select_dp->V[i]);
+                else
+                  strncpy(alBuf,select_dp->V[i],(int)select_dp->L[i]);
+              }
+              _swTrim(alBuf);
+              strcat(alBuf,"|");
+              fwrite(alBuf,sizeof(char),strlen(alBuf),fp);
+            } /* end in for */
+            rownum++;
+            fputc('\n',fp);
+          }               /* end for */
+          fclose(fp);
+          swVdebug(2,"S0490: ½«ËùÓÐ¼ÇÂ¼Ð´ÈëÎÄ¼þ[%s]",alFilename);   
+          if ( rownum > 0 )
+            strcpy(alSqlcode,"0");
+          else
+            sprintf(alSqlcode,"%d",sqlca.sqlcode);
+          /* ÊÍ·Å×ÊÔ´ */
+          free_sqlda(select_dp);
+          free_sqlda(bind_dp);                    
+          EXEC SQL WHENEVER SQLERROR CONTINUE;
+          /* ¹Ø±ÕÓÎ±ê*/
+          EXEC SQL CLOSE cur3;
+          swVdebug(2,"S0500: Ö´ÐÐSQLÓï¾ä[%s]³É¹¦",alSqltext);                 
+          /* ³õÊ¼»¯ _SQLOFFSETÓòÎª0 */
+          sprintf(alOffset,"0");
+          ilRc = swFmlset("_SQLOFFSET",strlen(alOffset),
+            alOffset,psgPreunpackbuf);
+          if (ilRc)
+          {
+             swVdebug(1,"S0510: ÖÃ[_SQLOFFSET]Óò³ö´í");
+             strcpy(alSqlcode,"-1");
+          }
+          sprintf(alSqlnrows,"%d",rownum);
+          break;          
+        case cSQLFETCH:
+          /* ´ò¿ªÃûÎªÓÎ±êÃû.½»Ò×Á÷Ë®ºÅµÄÁÙÊ±ÎÄ¼þ */
+          alPos = strstr(alSqltext,"INTO");
+          if ( !alPos ) 
+          {
+            swVdebug(1,"S0520: OPENÓï¾ä¶¨Òå³ö´í");
+            strcpy(alSqlcode,"-1");
+          }
+          strncpy(alCur,alSqltext + 6,alPos -alSqltext -7);
+          llTranid=slMsgpack.sMsghead.lTranid;
+          sprintf(alFilename,"%s/tmp/%s.%d",getenv("SWITCH_DIR"),
+            alCur,llTranid);
+          if ((fp = fopen(alFilename,"r")) == NULL) 
+          {
+            swVdebug(1,"S0530:´ò¿ªÎÄ¼þ³ö´í[%d]",fp);
+            strcpy(alSqlcode,"-1");
+            break;
+          }
+          swVdebug(2,"S0540: ´ò¿ªÁÙÊ±ÎÄ¼þ[%s]³É¹¦!",alFilename);
+          /* È¡ÎÄ¼þÆ«ÒÆÁ¿ */
+          memset(alOffset,0x00,sizeof(alOffset));
+          ilRc=swFmlget(psgPreunpackbuf,"_SQLOFFSET",&ilFldlen,alOffset);
+          if (ilRc) 
+          {
+            swVdebug(1,"S0550: È¡_SQLOFFSETÓò³ö´í");
+            strcpy(alSqlcode,"-1");
+            break;
+          }
+          llOffset = atol(alOffset);
+          ilRc =fseek(fp,llOffset,SEEK_SET);
+          if(ilRc < 0) 
+          {
+            swVdebug(1,"S0560: ²Ù×÷ÎÄ¼þ³ö´í[%d]",ilRc);
+            strcpy(alSqlcode,"-1");
+            break;
+          }
+          /* ´ÓÎÄ¼þÖÐÈ¡³öÒ»ÌõÊý¾Ý¿â¼ÇÂ¼ */
+          memset(alBuf,0x00,sizeof(alBuf));
+          for(i=0; ;i++) 
+          {
+            alBuf[i] = fgetc(fp);
+            if(alBuf[i] =='\n' || alBuf[i] ==EOF) break;
+          }   
+          /* ¹Ø±ÕÁÙÊ±ÎÄ¼þ */
+          fclose(fp);
+          if ( i == 0) 
+          {
+            swVdebug(1,"S0570:FETCH ¼ÇÂ¼Îª¿Õ");
+            sprintf(alSqlcode,"%d",SQLNOTFOUND);
+            break;
+          }
+          strcpy(alSqlnrows,"1");
+
+          /* ½«¼ÇÂ¼ÖÐµÄËùÓÐ×Ö¶ÎÖÃÈë±¨ÎÄÖÐ */
+          for (j = 0;j < ilFldnum;j++) 
+          {
+            _swGetOneField(alBuf,j+1,alSelectresult,'|'); 
+            strcpy(alFldname,palSqlval[j]);
+            ilRc = swFmlset(alFldname,strlen(alSelectresult),
+              alSelectresult,psgPreunpackbuf);
+/* printf("alFldname = %s   alSelectresult = %s\n",alFldname , alSelectresult); */             
+            if (ilRc)
+            {
+              sprintf(alSqlcode,"FML%d",ilRc);
+              break;
+            }
+          }
+          swVdebug(2,"S0580: ½«¼ÇÂ¼ÖÃÈë±¨ÎÄ³É¹¦"); 
+          /* ÖØÖÃ _SQLOFFSETÓò */
+          llOffset = llOffset + i + 1;
+          sprintf(alOffset,"%d",llOffset);
+          ilRc = swFmlset("_SQLOFFSET",strlen(alOffset),\
+            alOffset,psgPreunpackbuf);
+          if (ilRc) 
+          {
+            swVdebug(1,"S0590: ÖÃ[_SQLOFFSET]Óò³ö´í");
+            strcpy(alSqlcode,"-1");
+          }
+          break;
+        case cSQLCLOSE:
+          /* É¾³ýÃûÎªÓÎ±ê.½»Ò×Á÷Ë®ºÅµÄÁÙÊ±ÎÄ¼þ */
+          strncpy(alCur,alSqltext + 6,strlen(alSqltext) - 6); 
+          llTranid=slMsgpack.sMsghead.lTranid;
+          sprintf(alFilename,"%s/tmp/%s.%d",\
+            getenv("SWITCH_DIR"),alCur,llTranid);
+          unlink(alFilename);
+          swVdebug(2,"S0600: É¾³ýÁÙÊ±ÎÄ¼þ[%s]",alFilename);
+          break;
+        default:
+          swVdebug(1,"S0610: SQLÓï¾ä[%s]²»ºÏ·¨",alSqltext);
+          strcpy(alSqlcode,"-1");
+          break;
+      } /* end of switch */
+      /* ÖÃ _SQLCODE¡¢_SQLNROWSÓò */
+      if ( rownum > 0 )
+        strcpy(alSqlcode,"0");
+      else
+        sprintf(alSqlcode,"%d",sqlca.sqlcode);
+      ilRc = swFmlset("_SQLCODE",strlen(alSqlcode),alSqlcode,psgPreunpackbuf);
+      if (ilRc) 
+      {
+        swVdebug(1,"S0620: ÖÃ[_SQLCODE]Óò³ö´í");
+        continue;
+      }
+      ilRc = swFmlset("_SQLNROWS",strlen(alSqlnrows),\
+        alSqlnrows,psgPreunpackbuf);
+      if (ilRc) 
+      {
+        swVdebug(1,"S0630: ÖÃ[_SQLNROWS]Óò³ö´í");
+        continue;
+      }
+      /* ±¨ÎÄ´ò°üºó·¢ËÍµ½±¨ÎÄÔ´·¢ÓÊÏä */
+      ilRc = swFmlpack(psgPreunpackbuf,slMsgpack.aMsgbody,\
+        &(slMsgpack.sMsghead.iBodylen));
+      if (ilRc) 
+      { 
+        swVdebug(1,"S0640: Éú³ÉFML±¨ÎÄÊ§°Ü");
+        continue;
+      }
+      ilRc = qwrite2( (char *)&slMsgpack, slMsgpack.sMsghead.iBodylen+iMSGHEADLEN, ilOrgqid,ilPriority,ilClass,ilType );
+      if (ilRc) 
+      {
+        swVdebug(2,"S0650: ·¢ËÍ±¨ÎÄÖÁÔ´·¢ÓÊÏä³ö´í");
+        swMberror(ilRc, "S3050 : qwriteÖÁÔ´·¢ÓÊÏä³ö´í!");
+        swQuit(FAIL);
+      }
+      swVdebug(1,"S0660: ½«±¨ÎÄ·¢ËÍ»ØÔ´ÓÊÏä");
+      if (cgDebug >=2)  swDebugfml((char *)&slMsgpack);
+    }
+#endif
+}
+
+void swQuit(int sig)
+{
+  int i;
+  signal(SIGTERM,SIG_IGN);
+  swDbclose();
+  swVdebug(0,"S0670: [swDb_Ora]ÒÑ¾­Í£Ö¹!");
+  qdetach();
+  exit(sig);
+}
+
+int swPresql(char *aSqlstr,char *aSqltext,char paSqlval[100][100 + 1],short *iFldnum,char *alSqlflag)
+{
+  char *alPos1;
+  char *alPos2;
+  char alSqlval[1024 + 1];
+  char alSqlstr[1024 + 1];
+  /* modified by wangpan */
+  char alFldexpress[2*iFLDVALUELEN + 1],alTmpexp[iFLDVALUELEN + 1];
+  /* end modify          */
+  char alFldvalue[1024 + 1];
+  char alBuf[1024 + 1];
+  short ilFldlen,ilRc;
+  short i = 0;
+
+  strcpy(alSqlstr,aSqlstr);
+  for(;;) {
+    /* È¥±äÁ¿¶¨Òå·û£¬È¡SQLÓï¾ä */
+    alPos1 = strrchr(alSqlstr,'{');
+    if (!alPos1) 
+      break;
+    alPos2 = strchr(alPos1,'}');
+    if (!alPos2)  
+      break;
+    memset(alFldexpress,0x00,sizeof(alFldexpress));
+    /* strncpy(alFldexpress,alPos1 + 1,alPos2 - alPos1 - 1); */
+    /* delete   by wangpan 2001/11/29                        */
+    /* modified by wangpan 2001/11/29                        */ 
+    memset(alTmpexp,0x00,sizeof(alTmpexp));
+    strncpy(alTmpexp,alPos1 + 1,alPos2 - alPos1 - 1);
+    ilRc = _swExpN2T(alTmpexp,alFldexpress);
+    if(ilRc!=0) return(ilRc);
+    /* end modify by wangpan 2001/11/29                      */
+
+    ilRc = _swExpress(alFldexpress,alFldvalue,&ilFldlen);
+    if (ilRc) 
+    {
+      swVdebug(3,"S0680: ¼ÆËã±í´ïÊ½[%s]³ö´í",alFldexpress);
+      return(ilRc);
+    }
+    strcpy(alBuf,alPos2 + 1);
+    strncpy(alPos1,alFldvalue,ilFldlen);
+    strcpy(alPos1 + ilFldlen,alBuf);
+  }
+  ilRc = swExstr(alSqlstr,alSqlflag);
+  if (ilRc)
+  {
+    swVdebug(3,"S0690: SQLÓï¾ä[%s]²»ºÏ·¨",alSqlstr);
+    return(ilRc);
+  }
+
+  switch (alSqlflag[0]) {
+    case cSQLSELECT:
+      alPos1 = strstr(alSqlstr,"INTO ");
+      if (!alPos1)
+        return (FAIL);
+      if ( alSqlflag[0] = cSQLSELECT) {
+        alPos2 = strstr(alPos1,"FROM ");
+        if (!alPos1)
+          return (FAIL);
+        strcpy(aSqltext,alSqlstr);
+        strcpy(aSqltext+(alPos1-alSqlstr),alPos2); 
+        memset(alSqlval,0x00,sizeof(alSqlval));
+        strncpy(alSqlval,alPos1 + 5 ,alPos2 - alPos1 - 5);
+        _swTrim(aSqltext);
+        _swTrim(alSqlval);
+        alPos1 = alSqlval;
+      }
+      for (;;) {
+        alPos2 = strchr(alPos1,',');
+        if (!alPos2) 
+          break;
+        memset(paSqlval[i],0x00,100 + 1);
+        strncpy(paSqlval[i],alPos1,alPos2 - alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+        alPos1 = alPos2 + 1;
+      }
+      if (strlen(alPos1) >= 0) {
+        memset(paSqlval[i],0x00,100 + 1);
+        strcpy(paSqlval[i],alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+      }
+      *iFldnum = i ;
+      break;
+
+    case cSQLOPEN:
+      alPos1 = strstr(alSqlstr,"SELECT ");
+      if (!alPos1)
+        return (FAIL);
+      alPos1 = alPos1 + 8;
+      alPos2 = strstr(alPos1,"FROM ");
+      if (!alPos2)
+        return (FAIL);
+      for (;;) {
+        alPos2 = strchr(alPos1,',');
+        if (!alPos2) 
+          break;
+        i++;
+        alPos1 = alPos2 + 1;
+      }
+      if (strlen(alPos1) >= 0)
+        i = i + 1;
+      *iFldnum = i ;
+      strcpy(aSqltext,alSqlstr);
+      break;
+
+    case cSQLFETCH:
+      alPos1 = strstr(alSqlstr,"INTO ");
+      if (!alPos1)
+        return(FAIL);
+      alPos1 = alPos1 + 5 ;
+      for (;;) {
+        alPos2 = strchr(alPos1,',');
+        if (!alPos2) 
+          break;
+        memset(paSqlval[i],0x00,100 + 1);
+        strncpy(paSqlval[i],alPos1,alPos2 - alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+        alPos1 = alPos2 + 1;
+      }
+      if (strlen(alPos1) >= 0) {
+        memset(paSqlval[i],0x00,100 + 1);
+        strcpy(paSqlval[i],alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+      }
+      *iFldnum = i ;
+      strcpy(aSqltext,alSqlstr);
+      break;
+
+    default:
+      _swTrim(alSqlstr);
+      strcpy(aSqltext,alSqlstr);
+      break;
+  }
+  return(SUCCESS);
+}
+
+int swExstr(char *alStr,char *cFlag)
+{
+   char *alPos;
+   int i;
+
+   /* ½«SQLÓï¾ä¹Ø¼ü×ÖÐ¡Ð´×ª»»³É´óÐ´ */
+   alPos = strstr(alStr,"select"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"update"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"insert"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"delete"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"from"); 
+   if (alPos) {
+     for( i=0;i<4;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"into"); 
+   if (alPos) {
+     for( i=0;i<4;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"where"); 
+   if (alPos) {
+     for( i=0;i<5;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"open"); 
+   if (alPos) {
+     for( i=0;i<4;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"declare"); 
+   if (alPos) {
+     for( i=0;i<7;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"cursor"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"for"); 
+   if (alPos) {
+     for( i=0;i<3;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"fetch"); 
+   if (alPos) {
+     for( i=0;i<5;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"close"); 
+   if (alPos) {
+     for( i=0;i<5;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+
+  /* È¡SQLÓï¾ä±êÊ¶ */
+  if( !strncmp(alStr,"SELECT ",7) ) {
+    cFlag[0]=cSQLSELECT;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"UPDATE ",7) ) {
+    cFlag[0] = cSQLUPDATE;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"INSERT ",7) ) {
+    cFlag[0]=cSQLINSERT;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"DELETE ",7) ) {
+    cFlag[0]=cSQLDELETE;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"OPEN ",5) ) {
+    cFlag[0]=cSQLOPEN;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"FETCH " ,6) ) {
+    cFlag[0]=cSQLFETCH;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"CLOSE " ,6) ) {
+    cFlag[0]=cSQLCLOSE;
+    return(SUCCESS);
+  }
+  else
+     return(FAIL);
+}
+
+/*ÎªSQLDA·ÖÅä¿Õ¼ä*/
+int alloc_descriptors(SQLDA **sqlda_desc,int size,int max_vname_len,int max_iname_len)
+{
+  int i;
+  /*sqlaldµÄµÚÒ»¸ö²ÎÊýÊÇSQLÓï¾äµÄ×î´óÁÐÊý»òÊäÈëËÞÖ÷±äÁ¿µÄ×î´ó¸öÊý¡£
+           *µÚ¶þ¸ö²ÎÊý£¬ÊÇÖ¸ÁÐÃûµÄ×î´ó³¤¶È£¬»ò²ÎÊýÃûµÄ×î´ó³¤¶È¡£
+           *µÚÈý¸ö²ÎÊý£¬ÊÇÖ¸Ö¸Ê¾·û±äÁ¿ÃûµÄ×î´ó³¤¶È¡£*/
+  /*¸øSQLDA·ÖÅä¿Õ¼ä£¬ÏÂÃæÕâ¸öSQLDAÓÃÓÚÊäÈë²ÎÊý*/
+  if ((*sqlda_desc = sqlald(size,
+    max_vname_len, max_iname_len)) == (SQLDA *) 0)
+  {
+    return(-1); 
+  }
+  /* ¸ø´æ·ÅÖ¸Ê¾·û±äÁ¿ÖµºÍ´æ·ÅÊý¾ÝµÄ±äÁ¿ÉêÇë¿Õ¼ä¡£*/
+  for (i = 0; i < MAX_ITEMS; i++) 
+  {
+    (*sqlda_desc)->I[i] = (short *) malloc(sizeof(short));
+    (*sqlda_desc)->V[i] = (char *) malloc(1);
+  }
+  return 0;
+}
+
+/*ÉèÖÃËÞÖ÷±äÁ¿µÄÐÅÏ¢*/
+int set_bind_variables(char *aSqltext,SQLDA *bind_desc)
+{
+  int i, n, loop_flag;
+  char bind_var[200];
+
+  /* Í¨¹ýDESCRIBEÓï¾ä£¬½«´¦ÀíÓï¾äµÄ²ÎÊýÃû¡¢Êý¾ÝÀàÐÍµÈÐÅÏ¢´æ·ÅÔÚbind_dpÖÐ*/
+  /* ½«½áºÏÃèÊö·ûÖÐµÄ½áºÏ±äÁ¿Êý³õÊ¼»¯Îª×î´óÖµ */
+  bind_desc->N = MAX_ITEMS; 
+  EXEC SQL PREPARE dosql11 FROM :aSqltext;
+  if (sqlca.sqlcode < 0 )
+  {
+    swVdebug(1,"S0700: [´íÎó/Êý¾Ý¿â] ×¼±¸Óï¾ä[%s]£¬sqlcode = [%d], %.70s",\
+      aSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);  
+  }
+  swVdebug(2,"S0710: ×¼±¸Óï¾ä[%s]ok!",aSqltext);
+  /*ÎªÓï¾äÉùÃ÷ÓÎ±ê*/
+  EXEC SQL DECLARE cur11 CURSOR FOR dosql11;
+  if (sqlca.sqlcode < 0 )
+  {
+    swVdebug(1,"S0720: [´íÎó/Êý¾Ý¿â] ÉêÃ÷ÓÎ±ê[%s]£¬sqlcode = [%d], %.70s",\
+      aSqltext,sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc); 
+      return(-1);    
+  }    
+  swVdebug(2,"S0730: ÉêÃ÷ÓÎ±êOK!");      
+  EXEC SQL DESCRIBE BIND VARIABLES FOR dosql11 INTO bind_desc;
+  if (sqlca.sqlcode < 0 )
+  {
+    swVdebug(1,"S0740: [´íÎó/Êý¾Ý¿â]Í¨¹ýDESCRIBEÓï¾ä£¬\
+      ½«´¦ÀíÓï¾äµÄ²ÎÊýÃû¡¢Êý¾ÝÀàÐÍµÈÐÅÏ¢´æ·ÅÔÚbind_dpÖÐ³ö´í £¬sqlcode = [%d], %.70s",\
+      sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+    return(-1);     
+  }  
+  swVdebug(2,"S0750: ³õÊ¼»¯ bind_desc ok!");
+  /* FÐ¡ÓÚ0£¬±íÊ¾SQLSQLDAAlloc()·ÖÅäµÄ¿Õ¼ä²»¹»£¬¼´Êµ¼Ê²ÎÊýµÄ¸öÊý³¬³öÔ¤ËãµÄ×î´óÖµ. */
+  if (bind_desc->F < 0)
+  {
+    swVdebug(1,"S0760: Óï¾ä[%s]ÖÐµÄ½áºÏ±äÁ¿ÊýÎª[%d],ÆäÖµÓ¦Ð¡ÓÚ[%d]",aSqltext,bind_desc->F,MAX_ITEMS);
+    return(-1);
+  }
+  /* ½«N£¨×î´óÖµ£©ÉèÖÃÎªÊµ¼ÊµÄ²ÎÊý¸öÊý*/
+  bind_desc->N = bind_desc->F;
+  /* ÌáÊ¾ÓÃ»§ÊäÈë²ÎÊýÖµ£¬²¢ÉèÖÃSQLDAµÄÆäËûÏà¹ØÖµ£¬Èç£º³¤¶ÈµÈ¡£*/
+  /* Ñ­»·ÎªÃ¿¸ö½áºÏ±äÁ¿·ÖÅäÄÚ´æ£¬Ö´ÐÐ¶¯Ì¬SQLÓï¾ä */
+  for (i = 0; i < bind_desc->F; i++)
+  {
+    printf("Óï¾ä[%s]ÖÐº¬ÓÐ½áºÏÊäÈë±äÁ¿\n",aSqltext);
+    printf ("\nÇëÊäÈë±äÁ¿ %.*s µÄÖµ(Ö±½Ó»Ø³µ½áÊøµ±Ç°Óï¾ä):",
+         (int)bind_desc->C[i], bind_desc->S[i]);
+    fgets(bind_var, sizeof bind_var, stdin);
+    /* »ñµÃ³¤¶È£¬È¥µôNULL½áÊø·û */
+    n = strlen(bind_var) - 1;
+    /*ÉèÖÃ²ÎÊý³¤¶È */
+    bind_desc->L[i] = n;
+    /* ·ÖÅä´æ·Å²ÎÊýÊý¾ÝµÄÄÚ´æ¿Õ¼ä */
+    bind_desc->V[i] = (char *) realloc(bind_desc->V[i], (bind_desc->L[i] + 1));            
+    /* ½«Êý¾Ý·ÅÔÚÕâ¸öÄÚ´æ¿Õ¼äÖÐ */
+    strncpy(bind_desc->V[i], bind_var, n);
+    /* ÉèÖÃÖ¸Ê¾·û±äÁ¿µÄÖµ*/
+    if ((strncmp(bind_desc->V[i], "NULL", 4) == 0) ||
+      (strncmp(bind_desc->V[i], "null", 4) == 0))
+      *bind_desc->I[i] = -1;
+    else
+      *bind_desc->I[i] = 0;
+    /* ÉèÖÃÊý¾ÝÀàÐÍÎªCHAR£¬ORACLE»á¸ù¾ÝÁÐµÄÊý¾ÝÀàÐÍ×Ô¶¯×ª»» */
+    bind_desc->T[i] = 1;
+  }
+  return 0;
+}
+/*´¦ÀíÓï¾ä*/
+/*ÉèÖÃ²éÑ¯ÃèÊö·ûÐÅÏ¢*/
+int process_select_list(char *aSqltext,SQLDA *select_desc)
+{
+  int i, null_ok, precision, scale;
+  /* Èç¹ûÊÇSELECTÓï¾ä,ÔòÍ¨¹ýDESCRIBEº¯Êý·µ»ØÁÐÃûÊý¾ÝÀàÐÍ,ºÍÊÇ·ñÎªNULL±êÖ¾*/
+  /* ÉèÖÃ²éÑ¯ÃèÊö·û×î¶àÄÜ¹»ÃèÊöµÄÑ¡ÔñÁÐ±íÊý */
+  select_desc->N = MAX_ITEMS;
+  /* ×¼±¸Óï¾ä */
+  EXEC SQL PREPARE dosql12 FROM :aSqltext;
+  if (sqlca.sqlcode < 0 )
+  {
+    swVdebug(1,"S0770: [´íÎó/Êý¾Ý¿â]×¼±¸Óï¾ä[%s]³ö´í£¬aSqltext,sqlcode = [%d],\
+      %.70s",sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+    return(-1);     
+  }  
+  EXEC SQL DESCRIBE SELECT LIST FOR dosql12 INTO select_desc;
+    if (sqlca.sqlcode < 0 )
+  {
+    swVdebug(1,"S0780: [´íÎó/Êý¾Ý¿â]³õÊ¼»¯²éÑ¯ÃèÊö·û³ö´í£¬aSqltext,sqlcode = [%d],\
+      %.70s",sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+    return(-1);     
+  }  
+  /* Èç¹ûFÐ¡ÓÚ0¡£Ôò±íÊ¾±ÈÔ¤¶¨µÄÁÐÊýÒª¶à¡£*/
+  if (select_desc->F < 0)
+  {
+    swVdebug(1,"S0790: Óï¾ä[%s]ÖÐµÄÑ¡ÔñÁÐ±íÏîÊý[%d]³¬¹ý×î´óÔÊÐíÖµ[%d]",\
+      aSqltext,select_desc->F,MAX_ITEMS);
+    return(-1);
+  }
+  /* ÉèÖÃ×î´óÁÐÊýÎªÊµ¼ÊÁÐÊý*/
+  select_desc->N = select_desc->F;
+  /* ÎªÃ¿ÁÐ·ÖÅä¿Õ¼ä,¼´ÖØÐÂÉèÖÃ²éÑ¯ÃèÊö·ûÖÐµÄÑ¡ÔñÁÐ±íÏî,\£
+  SQLNumberPrecV6() º¯ÊýµÄ×÷ÓÃÊÇ´Óselect_dp->L[i]»ñµÃ¾«¶ÈºÍ³¤¶È \£
+  SQLColumnNullCheck() º¯ÊýµÄ×÷ÓÃÊÇ¼ì²é¸ÃÁÐÊÇ·ñÎªNULL */
+
+  for (i = 0; i < select_desc->F; i++)
+  {
+    /* ¹Ø±Õ×î¸ßÎ»,¼´Çå³ýTÊý×éÔªËØÖÐµÄ¿ÕÖµÔ¼Êø×´Ì¬Î» */
+    /* SQLColumnNullCheck (&(select_desc->T[i]),\
+       &(select_desc->T[i]), &null_ok);  */
+    sqlnul((unsigned short *)&(select_desc->T[i]),\
+      (unsigned short *)&(select_desc->T[i]),&null_ok);
+    /* ÖØÐÂÉèÖÃÑ¡ÔñÁÐ±íÏîµÄ³¤¶ÈºÍÊý¾ÝÀàÐÍ */
+    switch (select_desc->T[i])
+    {
+      case  1 : /* ×Ö·ûÐÍ */
+        break;
+      case  2 : /* NUMBERÊý¾ÝÀàÐÍ,»ñµÃ¾«¶ÈºÍ·¶Î§*/
+      /*  SQLNumberPrecV6 (SQL_SINGLE_RCTX, &(select_desc->L[i]), &precision, 
+&scale);  */
+        sqlprc((unsigned long *)&(select_desc->L[i]),&precision,&scale);
+        /* Èç¹û¾«¶ÈÎª0£¬ÔòÉèÖÃÎª×î´óÖµ40 */
+        if (precision == 0) precision = 40;
+        if (scale > 0)
+          select_desc->L[i] = sizeof(float);
+        else
+          select_desc->L[i] = sizeof(int);
+        break;
+      case  8 : /* LONGÊý¾ÝÀàÐÍ */
+        select_desc->L[i] = 240;
+        break;
+      case 11 : /* ROWID Êý¾ÝÀàÐÍ */
+        select_desc->L[i] = 18;
+        break;
+      case 12 : /* DATE Êý¾ÝÀàÐÍ */
+        select_desc->L[i] = 9;
+        break;
+      case 23 : /* RAW Êý¾ÝÀàÐÍ */
+        break;
+      case 24 : /* LONG RAW Êý¾ÝÀàÐÍ */
+        select_desc->L[i] = 240;
+        break;
+    }
+    /* ÉêÇë¿Õ¼ä¸øSQLDAÀ´´æ·ÅÊý¾Ý*/
+    if (select_desc->T[i] != 2)
+      select_desc->V[i] = 
+        (char *) realloc(select_desc->V[i],select_desc->L[i] + 1);  
+    else
+      select_desc->V[i] = 
+        (char *) realloc(select_desc->V[i],select_desc->L[i]);  
+    /* ³ýÁËLONG RAWºÍNUMBER£¬ÆäËûÊý¾ÝÀàÐÍ×ª»»Îª×Ö·ûÐÍÊý¾ÝÀàÐÍ*/
+    if (select_desc->T[i] != 24 && select_desc->T[i] != 2)
+      select_desc->T[i] = 1;
+    /* ½« NUMBERÊý¾ÝÀàÐÍ×ª»»Îª¸¡µãÐÍÊý¾ÝÀàÐÍ»òintÊý¾ÝÀàÐÍ*/
+    if (select_desc->T[i] == 2)
+      if (scale > 0)
+        select_desc->T[i] = 4;  /* float */
+      else
+        select_desc->T[i] = 3;  /* int */
+  }
+  return 0;
+}
+
+void free_sqlda(SQLDA *sqlda_desc)
+{
+  int i;
+  for (i = 0; i < MAX_ITEMS; i++)
+  {    
+    if (sqlda_desc->V[i] != (char *) 0) free(sqlda_desc->V[i]);
+    free(sqlda_desc->I[i]);   /* MAX_ITEMS were allocated. */
+  }
+  sqlclu(sqlda_desc);
+}

@@ -1,0 +1,4 @@
+ROUTEDESC=电话银行座席向网银前端请求路由
+[ROUTE]
+100 CALL 76 WITH REVMODE 1                        #转发网银前端
+200 SEND 21 WITH END

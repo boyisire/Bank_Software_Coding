@@ -1,0 +1,517 @@
+_control_set_resolutin_to = FIXED;
+$g_source_control_fixed_regexp = ‘/\bfix(?:ed|es)\s+(?:bug|issue)?\s*[#]{0,1}(\d+)\b/I’;
+
+
+上面svnbot是在mantis中创建的一个用户svnbot。
+
+测试：
+/usr/local/php/bin/php /usr/local/apache2/htdocs/mantis/scripts/checkin.php <<< “my test fixed issue #4 by svnbot”
+
+查看mantis中编号4文件，可以看到此问题状态变成了“已解决”，并添加有注释。
+注：如果在信息中有fixed fixes等字眼时，会处理该问题为已解决状态，如果没有，那么就只是多了一条注释。
+
+使用svn客户端配置
+	首先在TortoiseSVN里设置一个项目的属性，右键点击已经checkout的目录，“属性”，在subversion一栏里，加入以下属性：
+bugtraq:label=issue
+bugtraq:url=http://192.168.8.120/mantis/view.php?id=%BUGID%
+bugtraq:message=issue %BUGID%
+bugtraq:warnifnoissue=true
+
+	在版本库的目录下有个hooks的文件夹，在此文件夹中创建文件：post-commit，写入下列内容：
+#!/bin/bash
+REPOS=”$1”
+REV=”$2”
+auth=$(svnlook author –r $REV $REPOS)
+dt=$(svnlook date –r $REV $REPOS)
+changed=$(svnlook changed –r $REV $REPOS)
+log=$(svnlook log –r $REV $REPOS)
+n=$”\n”
+
+/usr/local/php/bin/php –q /usr/local/apache2/htdocs/mantis/scripts/checkin.php <<< “Changeset[${REV}] by $auth,$dt$n$log$n$changed”
+
+保存退出。
+
+测试：
+在svn客户端，commit文件，输入编号，在message中，如果有有”fixed #编号”,字样的话，就会将此问题置为“已解决”,如果没有，就会只添加注释。
+
+遗留问题：
+上面那个$log地址可能有误，在mantis中显示如这样的格式：A?\230?\181\139?\232?\175?\1492.txt
+如果在message中加入中文，在mantis中无法正常显示。
+Mantis集成svn配置文档
+
+Mantis集成svn的前提是svn与apache集成好。
+
+1.	集成svn与apache
+首先要将svn和apache安装好。本服务器中已经安装好了svn和apache，但由于安装时未指定相应的参数，在后面会导致错误，因此重新安装。
+
+安装apache
+Apache的安装以前有相关的文档，在此处只记录一下configure的参数信息：
+./configure –prefix=/usr/local/apache2/ --sysconfdir=/etc/httpd/ --with-include-arp –enable-so –enable-deflate=shared –enable-expires=shared –enable-rewrite=shared –enable-static-support –enable-dav –enable-maintainer-mode
+
+安装apr
+下载解压后，在目录中./configure –prefix=/usr/local/apr
+make && make install
+
+安装apr-util
+下载解压后，在目录中./configure –prefix=/usr/local/apr-util –with-apr=/usr/local/apr
+然后make && make install
+
+安装sqlite
+下载解压后
+./configure –prefix=/usr/local/sqlite  && make && make install
+
+安装svn
+下载解压
+进入svn的文件目录中，在此目录中创建一个目录：
+mkdir sqlite-amalgamation
+拷贝sqlite中的sqlite3.c到此目录中，不然在安装时会出错。
+./configure –prefix=/usr/local/svn/ --with-apxs=/usr/local/apache2/bin/apxs –with-apr=/usr/local/apr/bin/apr-1-config –with-apr-util=/usr/local/apr-util/bin/apu-1-config –with-neon=/usr/local/neon/ --with-ssl –enable-maintainer-mode
+
+make && make install
+2.	配置svn
+打开svn
+svnadmin create svnroot //建立名字为svnroot的版本库
+转到svnroot的目录下，可以查看到passwd svnserve.conf authz这三个文件。
+	修改这三个文件：
+文件svnserve.conf
+-------------CUT-----------------
+[general]
+### These options control access to the repository for unauthenticated
+### and authenticated users. Valid values are "write", "read",
+### and "none". The sample settings below are the defaults.
+anon-access = read
+auth-access = write
+### The password-db option controls the location of the password
+### database file. Unless you specify a path starting with a /,
+### the file's location is relative to the directory containing
+### this configuration file.
+### If SASL is enabled (see below), this file will NOT be used.
+### Uncomment the line below to use the default password file.
+password-db = passwd
+### The authz-db option controls the location of the authorization
+### rules for path-based access control. Unless you specify a path
+### starting with a /, the file's location is relative to the the
+### directory containing this file. If you don't specify an
+### authz-db, no path-based access control is done.
+### Uncomment the line below to use the default authorization file.
+authz-db = authz
+### This option specifies the authentication realm of the repository.
+### If two repositories have the same authentication realm, they should
+### have the same password database, and vice versa. The default realm
+### is repository's uuid.
+realm = SvnRoot
+-------------CUT-----------------
+文件passwd
+-------------CUT-----------------
+[users]
+# harry = harryssecret
+# sally = sallyssecret
+zhanghui = zhanghui
+-------------CUT-----------------
+文件authz
+-------------CUT-----------------
+[aliases]
+# joe = /C=XZ/ST=Dessert/L=Snake City/O=Snake Oil, Ltd./OU=Research Institute/CN=Joe Average
+
+[groups]
+# harry_and_sally = harry,sally
+# harry_sally_and_joe = harry,sally,&joe
+#userlist = zhanghui
+
+# [/foo/bar]
+# harry = rw
+# &joe = r
+# * =
+
+# [repository:/baz/fuz]
+# @harry_and_sally = rw
+# * = r
+
+[/]
+zhanghui=rw
+-------------CUT-----------------
+
+
+启动svn服务：
+svnserve -d -r /usr/local/subversion-1.6.6/svnroot
+
+测试svn:
+
+在linux下做checkout测试
+[root@localhost ~]# su - zhanghui
+[zhanghui@localhost ~]$ mkdir code
+[zhanghui@localhost ~]$ cd code
+[zhanghui@localhost code]$ svn checkout svn://192.168.0.108 [^]
+Authentication realm: <svn://192.168.0.108:3690> [^] SvnRoot
+Password for 'zhanghui': 
+
+-----------------------------------------------------------------------
+ATTENTION! Your password for authentication realm:
+
+   <svn://192.168.0.108:3690> [^] SvnRoot
+
+can only be stored to disk unencrypted! You are advised to configure
+your system so that Subversion can store passwords encrypted, if
+possible. See the documentation for details.
+
+You can avoid future appearances of this warning by setting the value
+of the 'store-plaintext-passwords' option to either 'yes' or 'no' in
+'/home/zhanghui/.subversion/servers'.
+-----------------------------------------------------------------------
+Store password unencrypted (yes/no)? yes
+
+...
+可将当前空的版本库checkout
+[zhanghui@localhost code]$ pwd
+/home/zhanghui/code
+[zhanghui@localhost code]$ ls -lrt
+total 4
+drwxrwxr-x 3 zhanghui zhanghui 4096 May 4 18:16 192.168.0.108
+
+(3.8)做svn add,commit测试
+在zhanghui 用户的.bash_profile下加入以下行：
+export SVN_EDITOR=vi
+
+在$HOME目录执行
+cd $HOME
+. ./.bash_profile 是环境变量生效
+
+cd code/192.168.0.108
+vi aaa.c 随便编辑个文本并存盘退出
+svn add aaa.c
+[zhanghui@localhost 192.168.0.108]$ svn add aaa.c
+A aaa.c
+
+svn commit
+编辑备注。。
+Log message unchanged or not specified
+(a)bort, (c)ontinue, (e)dit:
+选择c,回车
+c
+Adding aaa.c
+Transmitting file data .
+Committed revision 1.
+
+可见此版本库已可用。
+
+3.配置apache
+在apache的配置文件中增加以下内容：
+LoadModule dav_svn_module modules/mod_dav_svn.so 
+LoadModule authz_svn_module modules/mod_authz_svn.so 
+
+并且保证在modules文件夹中有这两个.so文件。
+增加：
+<Location /svn> 
+
+DAV svn 
+
+SVNParentPath /opt/svndata 
+
+AuthType Basic 
+
+AuthName "Subversion repository" 
+
+AuthUserFile /usr/local/svn/svn-auth.conf 
+
+Require valid-user 
+
+AuthzSVNAccessFile /usr/local/svn/svn-access.conf 
+
+           </Location>
+
+说明： 
+
+           SVNParentPath：svn仓库位置 
+
+           AuthUserFile：svn用户验证文件 
+
+           AuthzSVNAccessFile：svn用户权限验证文件 
+
+
+然后在浏览器中输入http://ip/svn/svnroot 就可以看到svn版本库中的内容了。
+
+3.	集成mantis与svn
+在mantis的配置文件中，修改config_inc.php
+增加：
+$g_source_control_account = ‘svnbot’;
+$g_source_control_set_status_to=RESOLVED;
+$g_source_control_regexp = ‘/\b(?:bug|issue|mantis)\s*[#]{0,1}(\d+)\bi’;
+$g_source_control_set_resolutin_to = FIXED;
+$g_source_control_fixed_regexp = ‘/\bfix(?:ed|es)\s+(?:bug|issue)?\s*[#]{0,1}(\d+)\b/I’;
+
+
+上面svnbot是在mantis中创建的一个用户svnbot。
+
+测试：
+/usr/local/php/bin/php /usr/local/apache2/htdocs/mantis/scripts/checkin.php <<< “my test fixed issue #4 by svnbot”
+
+查看mantis中编号4文件，可以看到此问题状态变成了“已解决”，并添加有注释。
+注：如果在信息中有fixed fixes等字眼时，会处理该问题为已解决状态，如果没有，那么就只是多了一条注释。
+
+使用svn客户端配置
+	首先在TortoiseSVN里设置一个项目的属性，右键点击已经checkout的目录，“属性”，在subversion一栏里，加入以下属性：
+bugtraq:label=issue
+bugtraq:url=http://192.168.8.120/mantis/view.php?id=%BUGID%
+bugtraq:message=issue %BUGID%
+bugtraq:warnifnoissue=true
+
+	在版本库的目录下有个hooks的文件夹，在此文件夹中创建文件：post-commit，写入下列内容：
+#!/bin/bash
+
+Mantis集成svn配置文档
+
+Mantis集成svn的前提是svn与apache集成好。
+
+1.	集成svn与apache
+首先要将svn和apache安装好。本服务器中已经安装好了svn和apache，但由于安装时未指定相应的参数，在后面会导致错误，因此重新安装。
+
+安装apache
+Apache的安装以前有相关的文档，在此处只记录一下configure的参数信息：
+./configure –prefix=/usr/local/apache2/ --sysconfdir=/etc/httpd/ --with-include-arp –enable-so –enable-deflate=shared –enable-expires=shared –enable-rewrite=shared –enable-static-support –enable-dav –enable-maintainer-mode
+
+安装apr
+下载解压后，在目录中./configure –prefix=/usr/local/apr
+make && make install
+
+安装apr-util
+下载解压后，在目录中./configure –prefix=/usr/local/apr-util –with-apr=/usr/local/apr
+然后make && make install
+
+安装sqlite
+下载解压后
+./configure –prefix=/usr/local/sqlite  && make && make install
+
+安装svn
+下载解压
+进入svn的文件目录中，在此目录中创建一个目录：
+mkdir sqlite-amalgamation
+拷贝sqlite中的sqlite3.c到此目录中，不然在安装时会出错。
+./configure –prefix=/usr/local/svn/ --with-apxs=/usr/local/apache2/bin/apxs –with-apr=/usr/local/apr/bin/apr-1-config –with-apr-util=/usr/local/apr-util/bin/apu-1-config –with-neon=/usr/local/neon/ --with-ssl –enable-maintainer-mode
+
+make && make install
+2.	配置svn
+打开svn
+svnadmin create svnroot //建立名字为svnroot的版本库
+转到svnroot的目录下，可以查看到passwd svnserve.conf authz这三个文件。
+	修改这三个文件：
+文件svnserve.conf
+-------------CUT-----------------
+[general]
+### These options control access to the repository for unauthenticated
+### and authenticated users. Valid values are "write", "read",
+### and "none". The sample settings below are the defaults.
+anon-access = read
+auth-access = write
+### The password-db option controls the location of the password
+### database file. Unless you specify a path starting with a /,
+### the file's location is relative to the directory containing
+### this configuration file.
+### If SASL is enabled (see below), this file will NOT be used.
+### Uncomment the line below to use the default password file.
+password-db = passwd
+### The authz-db option controls the location of the authorization
+### rules for path-based access control. Unless you specify a path
+### starting with a /, the file's location is relative to the the
+### directory containing this file. If you don't specify an
+### authz-db, no path-based access control is done.
+### Uncomment the line below to use the default authorization file.
+authz-db = authz
+### This option specifies the authentication realm of the repository.
+### If two repositories have the same authentication realm, they should
+### have the same password database, and vice versa. The default realm
+### is repository's uuid.
+realm = SvnRoot
+-------------CUT-----------------
+文件passwd
+-------------CUT-----------------
+[users]
+# harry = harryssecret
+# sally = sallyssecret
+zhanghui = zhanghui
+-------------CUT-----------------
+文件authz
+-------------CUT-----------------
+[aliases]
+# joe = /C=XZ/ST=Dessert/L=Snake City/O=Snake Oil, Ltd./OU=Research Institute/CN=Joe Average
+
+[groups]
+# harry_and_sally = harry,sally
+# harry_sally_and_joe = harry,sally,&joe
+#userlist = zhanghui
+
+# [/foo/bar]
+# harry = rw
+# &joe = r
+# * =
+
+# [repository:/baz/fuz]
+# @harry_and_sally = rw
+# * = r
+
+[/]
+zhanghui=rw
+-------------CUT-----------------
+
+
+启动svn服务：
+svnserve -d -r /usr/local/subversion-1.6.6/svnroot
+
+测试svn:
+
+在linux下做checkout测试
+[root@localhost ~]# su - zhanghui
+[zhanghui@localhost ~]$ mkdir code
+[zhanghui@localhost ~]$ cd code
+[zhanghui@localhost code]$ svn checkout svn://192.168.0.108 [^]
+Authentication realm: <svn://192.168.0.108:3690> [^] SvnRoot
+Password for 'zhanghui': 
+
+-----------------------------------------------------------------------
+ATTENTION! Your password for authentication realm:
+
+   <svn://192.168.0.108:3690> [^] SvnRoot
+
+can only be stored to disk unencrypted! You are advised to configure
+your system so that Subversion can store passwords encrypted, if
+possible. See the documentation for details.
+
+You can avoid future appearances of this warning by setting the value
+of the 'store-plaintext-passwords' option to either 'yes' or 'no' in
+'/home/zhanghui/.subversion/servers'.
+-----------------------------------------------------------------------
+Store password unencrypted (yes/no)? yes
+
+...
+可将当前空的版本库checkout
+[zhanghui@localhost code]$ pwd
+/home/zhanghui/code
+[zhanghui@localhost code]$ ls -lrt
+total 4
+drwxrwxr-x 3 zhanghui zhanghui 4096 May 4 18:16 192.168.0.108
+
+(3.8)做svn add,commit测试
+在zhanghui 用户的.bash_profile下加入以下行：
+export SVN_EDITOR=vi
+
+在$HOME目录执行
+cd $HOME
+. ./.bash_profile 是环境变量生效
+
+cd code/192.168.0.108
+vi aaa.c 随便编辑个文本并存盘退出
+svn add aaa.c
+[zhanghui@localhost 192.168.0.108]$ svn add aaa.c
+A aaa.c
+
+svn commit
+编辑备注。。
+Log message unchanged or not specified
+(a)bort, (c)ontinue, (e)dit:
+选择c,回车
+c
+Adding aaa.c
+Transmitting file data .
+Committed revision 1.
+
+可见此版本库已可用。
+
+3.配置apache
+在apache的配置文件中增加以下内容：
+LoadModule dav_svn_module modules/mod_dav_svn.so 
+LoadModule authz_svn_module modules/mod_authz_svn.so 
+
+并且保证在modules文件夹中有这两个.so文件。
+增加：
+<Location /svn> 
+
+DAV svn 
+
+SVNParentPath /opt/svndata 
+
+AuthType Basic 
+
+AuthName "Subversion repository" 
+
+AuthUserFile /usr/local/svn/svn-auth.conf 
+
+Require valid-user 
+
+AuthzSVNAccessFile /usr/local/svn/svn-access.conf 
+
+           </Location>
+
+说明： 
+
+           SVNParentPath：svn仓库位置 
+
+           AuthUserFile：svn用户验证文件 
+
+           AuthzSVNAccessFile：svn用户权限验证文件 
+
+
+然后在浏览器中输入http://ip/svn/svnroot 就可以看到svn版本库中的内容了。
+
+3.	集成mantis与svn
+在mantis的配置文件中，修改config_inc.php
+增加：
+$g_source_control_account = ‘svnbot’;
+$g_source_control_set_status_to=RESOLVED;
+$g_source_control_regexp = ‘/\b(?:bug|issue|mantis)\s*[#]{0,1}(\d+)\bi’;
+$g_source_control_set_resolutin_to = FIXED;
+$g_source_control_fixed_regexp = ‘/\bfix(?:ed|es)\s+(?:bug|issue)?\s*[#]{0,1}(\d+)\b/I’;
+
+
+上面svnbot是在mantis中创建的一个用户svnbot。
+
+测试：
+/usr/local/php/bin/php /usr/local/apache2/htdocs/mantis/scripts/checkin.php <<< “my test fixed issue #4 by svnbot”
+
+查看mantis中编号4文件，可以看到此问题状态变成了“已解决”，并添加有注释。
+注：如果在信息中有fixed fixes等字眼时，会处理该问题为已解决状态，如果没有，那么就只是多了一条注释。
+
+使用svn客户端配置
+	首先在TortoiseSVN里设置一个项目的属性，右键点击已经checkout的目录，“属性”，在subversion一栏里，加入以下属性：
+bugtraq:label=issue
+bugtraq:url=http://192.168.8.120/mantis/view.php?id=%BUGID%
+bugtraq:message=issue %BUGID%
+bugtraq:warnifnoissue=true
+
+	在版本库的目录下有个hooks的文件夹，在此文件夹中创建文件：post-commit，写入下列内容：
+#!/bin/bash
+REPOS=”$1”
+REV=”$2”
+auth=$(svnlook author –r $REV $REPOS)
+dt=$(svnlook date –r $REV $REPOS)
+changed=$(svnlook changed –r $REV $REPOS)
+log=$(svnlook log –r $REV $REPOS)
+n=$”\n”
+
+/usr/local/php/bin/php –q /usr/local/apache2/htdocs/mantis/scripts/checkin.php <<< “Changeset[${REV}] by $auth,$dt$n$log$n$changed”
+
+保存退出。
+
+测试：
+在svn客户端，commit文件，输入编号，在message中，如果有有”fixed #编号”,字样的话，就会将此问题置为“已解决”,如果没有，就会只添加注释。
+
+遗留问题：
+上面那个$log地址可能有误，在mantis中显示如这样的格式：A?\230?\181\139?\232?\175?\1492.txt
+如果在message中加入中文，在mantis中无法正常显示。
+
+REPOS=”$1”
+REV=”$2”
+auth=$(svnlook author –r $REV $REPOS)
+dt=$(svnlook date –r $REV $REPOS)
+changed=$(svnlook changed –r $REV $REPOS)
+log=$(svnlook log –r $REV $REPOS)
+n=$”\n”
+
+/usr/local/php/bin/php –q /usr/local/apache2/htdocs/mantis/scripts/checkin.php <<< “Changeset[${REV}] by $auth,$dt$n$log$n$changed”
+
+保存退出。
+
+测试：
+在svn客户端，commit文件，输入编号，在message中，如果有有”fixed #编号”,字样的话，就会将此问题置为“已解决”,如果没有，就会只添加注释。
+
+遗留问题：
+上面那个$log地址可能有误，在mantis中显示如这样的格式：A?\230?\181\139?\232?\175?\1492.txt
+如果在message中加入中文，在mantis中无法正常显示。

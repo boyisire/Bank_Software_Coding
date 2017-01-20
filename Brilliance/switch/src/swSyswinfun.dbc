@@ -1,0 +1,2156 @@
+#include "switch.h"
+EXEC SQL INCLUDE sqlca;
+#ifdef DB_POSTGRESQL
+EXEC SQL INCLUDE swDbstruct.h;
+#endif
+#ifdef DB_DB2
+EXEC SQL INCLUDE '../inc/swDbstruct.h';
+#endif
+#ifdef DB_INFORMIX
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+#ifdef DB_ORACLE
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+#ifdef DB_SYBASE
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+
+#include "swShm.h"
+#include "swCurses.h"
+
+int Message();
+int swGetmbNO(int,int);
+
+#define  TASKNAME       "swTask"
+#define  iMSGLEN       80
+/*#define  iMAXTASKCOUNT   100 delete by nh 20020807 */
+#define  iMAXRECORD      3000
+#define  LINECOUNT     LINES_MAIN - 2
+
+/**************************************************************
+ ** 函数名      : swListtask
+ ** 功  能      : 显示任务信息
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/23
+ ** 最后修改日期: 
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListtask(char aValue[][256])
+{
+  short ilRc;                      /* 返回码 */
+  short ilTotalcount;              /* 总数 */
+  short ilPagecount;               /* 本次显示数目 */
+  short i;
+
+  /* modify by nh 20020807
+  struct swt_sys_task pslSwt_sys_task[iMAXTASKCOUNT];*/
+  struct swt_sys_task *pslSwt_sys_task;
+  char alState[10];
+  char alDisptime[10];             /* 显示任务启动时间 */
+  int ch,ilCount=0;
+  int ilEndflag,ilEndfor,ilPos; 
+  char alTmp[101];
+    
+  swVdebug(4,"S0010: [函数调用] swListtask()");
+
+  /* 数据初始化 */
+  ilTotalcount=0;
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+  /*  Message("共享内存检测出错!\n"); */
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  /* modify by nh 20020807
+  ilRc = swShmselect_swt_sys_task_all_q(pslSwt_sys_task,&ilTotalcount);*/
+  ilRc = swShmselect_swt_sys_task_all_q(&pslSwt_sys_task,&ilTotalcount);
+  if (ilRc)
+  {
+    spw_print(&g_frame,"执行swShmselect_swt_sys_task_all_q出错\n");
+    return(FAIL);
+  }
+
+  /* delete by nh 20020807
+  if(ilTotalcount == iMAXTASKCOUNT)
+  {
+    spw_print(&g_frame,"任务总数超过最大限制数[%d],请调整\n",iMAXTASKCOUNT);
+    swVdebug(1,"S0020: [错误/其它] 任务总数超过最大限制,请调整!");
+    return(FAIL);
+  } */
+  
+  ilPos = 0,ilEndflag=0;
+  do
+  {
+    Message("\n   任务名                       邮箱号  进程号  启动时间  状态   重启次数\n");
+    ilPagecount = 1 ;
+    /* 提取记录 */
+     
+    for (i = ilPos;i<ilTotalcount;i++)
+    {
+      if(ilPagecount == LINECOUNT) break;	
+      _swTrim(pslSwt_sys_task[i].task_name); 
+      _swTrim(pslSwt_sys_task[i].task_file);
+
+      if(pslSwt_sys_task[i].task_status[0]=='1')
+        strcpy(alState, "BEG....");
+      else if(pslSwt_sys_task[i].task_status[0]=='2')
+        strcpy(alState, "UP");
+      else if(pslSwt_sys_task[i].task_status[0]=='3')
+        strcpy(alState, "END....");
+      else if(pslSwt_sys_task[i].task_status[0]=='4')
+        strcpy(alState, "DOWN");
+      else if(pslSwt_sys_task[i].task_status[0]=='5')
+        strcpy(alState, "ERROR");
+      else 
+        strcpy(alState, "UNKNOWN");
+
+      swVdebug(3,"S0030: alState=[%s]",alState);
+
+      if(pslSwt_sys_task[i].task_desc[0]!='\0')
+      {
+        sprintf(alTmp,"%s(%s)",pslSwt_sys_task[i].task_name,
+                               pslSwt_sys_task[i].task_desc);
+        if(strlen(alTmp)>30)
+        {
+          memcpy(alTmp+26,"...)",5);
+        }
+      }
+      else
+        strcpy(alTmp,pslSwt_sys_task[i].task_name);
+
+      _swTimeLongToChs( pslSwt_sys_task[i].start_time,alDisptime,"HH:MM:SS"); 
+      Message("  %-30.30s  %-4d  %-8d%-10.10s%-6.6s %4d|%-4d\n",
+        alTmp,
+        pslSwt_sys_task[i].q_id,
+        pslSwt_sys_task[i].pid,
+        alDisptime,
+        alState,
+        pslSwt_sys_task[i].restart_num,
+        pslSwt_sys_task[i].restart_max);
+      ilPagecount++;
+    }
+    if(i>ilCount) ilCount = i ; 
+    mvwaddstr(g_frame.msg,0,0,"                      ↑↓ 翻页 W/S键 翻行 U键 刷新 Q键 退出\n"); 
+    spw_print(&g_frame,"已显示[%d]个任务\n",ilCount);
+    wrefresh(g_frame.main);
+    ilEndfor = 0;
+    for(;;)/* start for */
+    {
+      ch = getch();
+      switch(ch)
+      {
+      	 case 'Q':
+         case 'q':
+           ilEndfor = 1;
+           ilEndflag = 1;
+           break;
+         case 's' :
+           if( i < ilTotalcount )
+           {
+             ilPos = ilPos + 1 ;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case 'w' :
+           if(ilPos > 0)
+           {
+             ilPos = ilPos - 1;
+             ilEndfor = 1;
+           }           
+           else 
+           {
+             ilPos = 0;
+             ilEndfor = 0;
+           }
+           break;
+         case CTRKEY_UP:
+           if(ilPos == 0) 
+           {
+             ilEndfor=0;
+             break;
+           }
+           if(ilPos < (LINECOUNT - 1) ) ilPos = 0;
+           else ilPos = ilPos - (LINECOUNT - 1) ; 
+           ilEndfor = 1;
+           break;
+         case CTRKEY_DOWN:
+           if(i < ilTotalcount)
+           {
+             ilPos = ilPos + (LINECOUNT - 1);
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;  
+         case 'u':
+           ilRc = swShmcheck();
+           if (ilRc != SUCCESS)
+           {
+             spw_print(&g_frame,"共享内存检测出错!\n");
+             return(FAIL);
+           }
+           /* modify by nh 20020807
+         ilRc = swShmselect_swt_sys_task_all_q(pslSwt_sys_task,&ilTotalcount);*/
+           ilRc = swShmselect_swt_sys_task_all_q(&pslSwt_sys_task,&ilTotalcount);
+           if (ilRc)
+           {
+             spw_print(&g_frame,"执行swShmselect_swt_sys_task_all_q出错\n");
+             return(FAIL);
+           }
+           ilEndfor = 1 ;
+           ilPos = ilPos ;
+           break;
+      }
+      if(ilEndfor == 1) break; 
+    }/* end for */
+    spw_redrawmain(&g_frame);
+/*    spw_redrawmsg(&g_frame);  */
+    if(ilEndflag==1) 
+    {
+      spw_redrawmsg(&g_frame);	
+      break;
+    }
+  }while(1);
+  spw_print(&g_frame,"共有[%d]个任务\n",ilTotalcount);
+  wrefresh(g_frame.main);
+  swVdebug(4,"S0040: [函数返回] swListtask()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swStarttask
+ ** 功  能      : 启动任务
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern  int swStarttask( char aValue[][256])
+{
+  char  alDbtname[21];              /* 任务名称 */
+  long  llPid;                      /* 进程号 */
+  short ilPidstatus;                /* 进程状态 */
+  char  alRunfile[100];             /* 运行程序 */
+  char  alProname[21];              /* 运行程序名称 */
+  FILE  *plPopenfile;               /* 管道名称 */
+  char  alFile1[51],alFile2[51],alFile3[51],alFind[51]; 
+  short ilFound;                    /* 发现标志 */
+  char  alFindTask[100];
+  short ilRc;                       /* 返回码 */
+  int  ch;
+  char  taskname[50];
+ 
+  struct msgpack slMsgpack;
+
+  swVdebug(4,"S0050: [函数调用] swStarttask(%s)",taskname);
+
+  llPid = -1;
+  ilPidstatus = 0;
+  
+  /*  根据约定：
+      aValue[0] ------  为段名称（见菜单配置文件）
+      通过curses界面输入的参数值从 aValue[1]开始,以下各个函数相同  */
+  
+  memset(taskname,0x00,sizeof(taskname));
+  strcpy(taskname,aValue[1]);   /* 取 1 号域 */
+  _swTrim(taskname);
+
+  if ((strcmp(taskname,"\0") == 0)||(strcmp(taskname,TASKNAME)==0)) 
+  {
+    spw_print(&g_frame,"确认要启动交换平台吗? (Y/N) ");
+    ch = getch();
+    waddch(g_frame.msg,ch);
+    waddch(g_frame.msg,'\n');
+    wrefresh(g_frame.msg);
+    if ((ch == (int)'Y') || (ch == (int)'y'))
+      strcpy(taskname,TASKNAME);
+    else 
+      return(FAIL); 
+  }
+  
+  memset(alProname,0x00,sizeof(alProname));
+  sprintf(alProname, "%s", taskname);
+
+  /* 切换到SWITCH_DIR目录 */
+  chdir(getenv("SWITCH_DIR"));
+
+  swVdebug(2,"S0060: 切换到SWITCH_DIR目录");
+  swVdebug(2,"S0070: 查看swTask进行是否已经启动");
+  /* 查看swTask进行是否已经启动 */
+  sprintf(alFindTask,"ps -e|grep %s",TASKNAME);
+  ilFound = 0;
+  plPopenfile = popen( alFindTask ,"r");
+  while ( feof(plPopenfile) == 0) 
+  {
+    memset(alFile1,0x00,sizeof(alFile1));
+    memset(alFile2,0x00,sizeof(alFile2));
+    memset(alFile3,0x00,sizeof(alFile3));
+    memset(alFind,0x00,sizeof(alFind));
+
+    fscanf(plPopenfile,"%s %s %s %s",alFile1,alFile2,alFile3,alFind);
+    if ( strcmp(alFind,TASKNAME) == 0 )
+    {
+      ilFound = 1;
+      break;
+    }
+  }
+  pclose(plPopenfile);
+
+  if(!strcmp(taskname, TASKNAME))
+  {
+    if ( ilFound == 1 )         /*任务管理进程swTask已存在*/
+    {
+      spw_print(&g_frame,"任务管理进程[%s]已在系统中运行!  Pid=[%s]\n", alFind, alFile1);
+      return FAIL;
+    }
+
+    /*任务管理进程swTask不存在则启动swTask*/
+    memset(alRunfile,0x00,sizeof(alRunfile));
+    sprintf(alRunfile,"%s/bin/%s",getenv("SWITCH_DIR"), taskname);
+
+    /* fork进程,执行swTask进程 */
+    if( (llPid=fork()) == 0)
+    {
+      ilPidstatus = execl(alRunfile,alProname,(char * )0 );
+      exit(SUCCESS);
+    }
+    if( ilPidstatus == 0)
+    {
+      ilRc = 0;
+      spw_print(&g_frame,"启动成功!\n");
+    }
+    else
+    {
+      spw_print(&g_frame,"启动失败!\n");
+      ilRc = -1;
+    }
+    return(ilRc);
+  }
+  /*启动非swTask进程*/
+  if ( ilFound==0 )          /*交换平台进程swTask未启*/
+  {
+    spw_print(&g_frame,"交换平台未启动，请先起交换平台!\n");
+    return FAIL;
+  }
+
+  /*检查该任务在任务管理器中是否存在*/
+  strncpy(alDbtname,taskname,sizeof(alDbtname));
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  ilRc = swShmselect_swt_sys_task(alDbtname,&sgSwt_sys_task);
+  if (ilRc)
+  {
+    spw_print(&g_frame,"所要启动的任务[%s]在任务管理器中不存在!\n",alDbtname);
+    return(FAIL);
+  }
+  swVdebug(2,"S0080: 所要启动的任务在任务管理器中存在");
+
+  /* 定位邮箱  */
+  if ( qattach( iMBSYSCON ) != 0 )
+  {
+    swVdebug(1,"S0090: [错误/邮箱] qattach()函数,错误码=-1,定位本地邮箱出错(iMBSYSCON)");
+    return(FAIL);
+  }
+  
+  /* 启动指定进程 */
+  swVdebug(2,"S0100: 开始启动任务[%s]...",taskname);
+
+  /* 发送命令报文给任务管理器 */
+  memset(&slMsgpack, 0x00, sizeof(struct msgpack));
+  slMsgpack.sMsghead.iMsgtype = iMSGORDER;
+  slMsgpack.sMsghead.lCode = 701;
+  slMsgpack.sMsghead.iBodylen = strlen(taskname);
+  strcpy(slMsgpack.aMsgbody, taskname);
+  ilRc = _qwrite2((char *)&slMsgpack,slMsgpack.sMsghead.iBodylen + 
+    sizeof(struct msghead),iMBTASK,0,0,0);
+
+  if (ilRc != SUCCESS) 
+  {
+    swVdebug(1,"S0110: [错误/邮箱] _qwrite2()函数,错误码=-1,发送报文给任务管理器失败");
+    return (FAIL);
+  }
+  wrefresh(g_frame.main);
+  swVdebug(2,"S0120: 发送报文给任务管理器成功");
+  swVdebug(2,"S0130: 进程[%s]启动成功!", alProname);
+  spw_print(&g_frame,"进程[%s]启动成功!\n", alProname);
+
+  /* 关闭邮箱*/
+  qdetach();
+
+  swVdebug(4,"S0140: [函数返回] swStarttask()返回码=0");
+  return(SUCCESS);
+}
+
+
+/**************************************************************
+ ** 函数名      : swStoptask
+ ** 功  能      : 停止任务
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern  int  swStoptask( char aValue[][256] )
+{
+  FILE *plPopenfile;                /* 管道名称 */
+  char  alFile1[51],alFile2[51],alFile3[51],alFind[51]; 
+
+  short ilFound;                    /* 发现标志 */
+  char  alFindTask[100];
+  short ilRc;                       /* 返回码 */
+  int  ch;
+  char taskname[50];
+  struct msgpack slMsgpack;
+
+  swVdebug(4,"S0150: [函数调用] swStoptask(%s)",taskname);
+
+  memset(taskname,0x00,sizeof(taskname));
+  strcpy(taskname,aValue[1]);   /* 取 1 号域 */
+  _swTrim(taskname);
+
+  if ((strcmp(taskname,"\0") == 0)||(strcmp(taskname,TASKNAME)==0))
+  {
+    spw_print(&g_frame,"确认要退出交换平台吗? (Y/N) ");
+    ch = getch();
+    waddch(g_frame.msg,ch);
+    waddch(g_frame.msg,'\n');
+    wrefresh(g_frame.msg);
+        
+    if (ch == (int)'y' || ch == (int)'Y')
+/*      taskname = TASKNAME;  */
+      strcpy(taskname,TASKNAME);
+    else
+      return(FAIL);
+  }
+  /* 检查任务是否存在 */
+  ilFound = 0;
+  sprintf(alFindTask,"ps -e|grep %s",TASKNAME);
+  plPopenfile = popen( alFindTask ,"r");
+
+  while ( feof(plPopenfile) == 0 )
+  {
+    memset(alFile1,0x00,sizeof(alFile1));
+    memset(alFile2,0x00,sizeof(alFile2));
+    memset(alFile3,0x00,sizeof(alFile3));
+    memset(alFind,0x00,sizeof(alFind));
+
+    fscanf(plPopenfile,"%s %s %s %s",alFile1,alFile2,alFile3,alFind);
+    if ( strcmp(alFind,TASKNAME) == 0 )
+    {
+      ilFound=1;
+      break;
+    }
+  }
+  pclose(plPopenfile);
+
+  if ( ilFound ==0 )
+  {
+    spw_print(&g_frame,"交换平台[%s]尚未运行! \n", TASKNAME);
+    swVdebug(1,"S0160: [其它] 交换平台[%s]尚未运行! ", TASKNAME);
+    return FAIL;
+  }
+  if ( strcmp( taskname,TASKNAME ) == 0 )
+  {
+    kill(atoi(alFile1),SIGTERM);
+    spw_print(&g_frame,"进程[%s]退出系统!  Pid=[%s]\n", alFind, alFile1);
+    return SUCCESS;
+  }
+  
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  ilRc = swShmselect_swt_sys_task(taskname,&sgSwt_sys_task);
+
+  if (ilRc)
+  {
+    spw_print(&g_frame,"所要停止的任务[%s]在任务管理器中不存在\n",taskname);
+    return(FAIL);
+  }
+  
+  if ( sgSwt_sys_task.pid <=0 ) 
+  {
+    spw_print(&g_frame,"进程[%s]尚未运行! \n", taskname);
+    swVdebug(1,"S0170: [其它] 进程[%s]尚未运行! ", taskname);
+    return FAIL;
+  }
+
+  swVdebug(2,"S0180: 开始停止任务[%s]...",taskname);
+
+  /* 定位邮箱  */
+  if (qattach( iMBSYSCON ) != 0)
+  {
+    swVdebug(1,"S0190: [错误/邮箱] qattach()函数,错误码=-1,定位本地邮箱出错(iMBSYSCON)");
+    return(FAIL);
+  }
+
+  /* 发送命令报文给任务管理器 */
+  memset(&slMsgpack, 0x00, sizeof(struct msgpack));
+  slMsgpack.sMsghead.iMsgtype = iMSGORDER;
+  slMsgpack.sMsghead.lCode = 702;
+  slMsgpack.sMsghead.iBodylen = strlen(taskname);
+  strcpy(slMsgpack.aMsgbody, taskname);
+
+  ilRc = _qwrite2((char *)&slMsgpack,slMsgpack.sMsghead.iBodylen + 
+      sizeof(struct msghead),iMBTASK,0,0,0);
+  if (ilRc != SUCCESS) 
+  {
+    swVdebug(1,"S0200: [错误/邮箱] _qwrite2()函数,错误码=%d,发送报文给任务管理器失败",ilRc);
+    swMberror(ilRc,NULL);
+    return (FAIL);
+  }
+  swVdebug(2,"S0210: 发送报文给任务管理器成功");
+  spw_print(&g_frame,"进程[%s]关闭成功!\n",taskname);
+  swVdebug(2,"S0220: 进程[%s]关闭成功!", taskname);
+  wrefresh(g_frame.main);
+  /* 关闭邮箱*/
+  qdetach();
+
+  swVdebug(4,"S0230: [函数返回] swStoptask()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swConup
+ ** 功  能      : 置端口应用层状态为UP
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/27
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swConup(char aValue[][256])
+{
+  short ilPid;
+  short ilRc;       /* 返回码 */
+  char alPortid[20];
+
+  swVdebug(4,"S0240: [函数调用] swConup(%s)",alPortid);
+
+  memset(alPortid,0x00,sizeof(alPortid));
+  strcpy(alPortid,aValue[1]);
+  _swTrim(alPortid);
+  
+  if (strcmp(alPortid,"\0") == 0)
+  {
+ /*   Message("Usage: U   portid\n");  */
+    spw_print(&g_frame,"端口号不能为空! \n");
+    return(FAIL);
+  }
+  ilPid = atoi(alPortid);
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  ilRc = swShmselect_swt_sys_queue(ilPid,&sgSwt_sys_queue);
+
+  if(ilRc == SHMNOTFOUND)
+  {
+    spw_print(&g_frame,"没有端口[%d]的记录!\n",ilPid);
+    return(FAIL);
+  }
+  if(ilRc)
+  {
+    spw_print(&g_frame,"选择端口表出错!\n");    
+    swVdebug(1,"S0250: [错误/共享内存] 选择端口表出错");
+    return(FAIL);
+  }
+  /*置端口应用层状态为UP*/
+  ilRc =  swPortset( ilPid, 2, 1 );
+  if ( ilRc )
+  {
+    spw_print(&g_frame,"强置端口[%d]状态出错!\n",ilPid);
+    swVdebug(1,"S0260: [错误/其它] 强置端口[%d]状态出错",ilPid);
+    return(FAIL);
+  }
+  wrefresh(g_frame.main);
+  spw_print(&g_frame,"强置端口[%d]状态成功!\n",ilPid);
+  swVdebug(2,"S0270: 更新[%d]端口为UP",ilPid);
+
+  swVdebug(4,"S0280: [函数返回] swConup()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swCondown
+ ** 功  能      : 置端口应用层状态为DOWN
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/27
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swCondown(char aValue[][256])
+{
+  short ilRc;       /* 返回码 */
+  short ilPid;
+  char alPid[20];
+
+  swVdebug(4,"S0290: [函数调用] swCondown(%s)",alPid);
+
+  strcpy(alPid,aValue[1]);
+  _swTrim(alPid);
+  if (strcmp(alPid,"\0") == 0)
+  {
+    spw_print(&g_frame,"端口号不能为空\n"); 
+    return(FAIL);
+  }
+
+  ilPid = atoi(alPid);
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+  ilRc = swShmselect_swt_sys_queue(ilPid,&sgSwt_sys_queue);
+
+  if(ilRc == SHMNOTFOUND)
+  {
+    spw_print(&g_frame,"没有端口[%d]的记录!\n",ilPid);
+    return(FAIL);
+  }
+  if(ilRc)
+  {
+    spw_print(&g_frame,"选择端口表出错!\n");
+    swVdebug(1,"S0300: [错误/共享内存] 选择端口表出错");
+    return(FAIL);
+  }
+
+  ilRc =  swPortset( ilPid, 2, 0 );
+  if ( ilRc )
+  {
+    spw_print(&g_frame,"强置端口[%d]状态出错!\n",ilPid);
+    swVdebug(1,"S0310: [错误/其它] 强置端口[%d]状态出错",ilPid);
+    return(FAIL);
+  }
+  wrefresh(g_frame.main);
+  spw_print(&g_frame,"强置端口[%d]状态成功!\n",ilPid);
+  
+  swVdebug(2,"S0320: 更新[%d]端口为DOWN",ilPid);
+  swVdebug(4,"S0330: [函数返回] swCondown()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swConset
+ ** 功  能      : 置端口状态为UP/DOWN
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/27
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swConset(char aValue[][256])
+{
+  short ilRc;       /* 返回码 */
+  short ilPid;
+  int   ilNum;
+  int   i;
+  char alPid[20],alValue[20];
+  
+  strcpy(alPid,aValue[1]);
+  strcpy(alValue,aValue[2]);
+  
+  swVdebug(4,"S0340: [函数调用] swConset(%s,%s)",alPid,alValue);
+
+  _swTrim(alPid);
+  if ((strcmp(alPid,"\0") == 0)&&(strcmp(alValue,"\0") == 0))
+  {
+    spw_print(&g_frame,"端口号和状态值不能为空! \n"); 
+    return(FAIL);
+  }
+
+  /* 判断输入的状态值是否为正确数值 */ 
+  ilNum = strlen(alValue);
+  for(i=0;i<ilNum;i++) 
+  { 
+    if ( (alValue[i]!='0')&&(alValue[i]!='1') )
+    {
+      spw_print(&g_frame,"输入的状态值非法\n");      
+      return(FAIL);
+    }
+  } 
+     
+  ilPid = atoi(alPid);
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+  ilRc = swShmselect_swt_sys_queue(ilPid,&sgSwt_sys_queue);
+
+  if(ilRc == SHMNOTFOUND)
+  {
+   spw_print(&g_frame,"没有端口[%d]的记录!\n",ilPid);    
+    return(FAIL);
+  }
+  if(ilRc)
+  {
+    spw_print(&g_frame,"选择端口表出错!\n");    
+    swVdebug(1,"S0350: [错误/共享内存] 选择端口表出错");
+    return(FAIL);
+  }
+  
+  for (i=0;i<ilNum;i++)
+  {
+    if ( alValue[i] == '0' )
+      ilRc =  swPortset( ilPid, i+1, 0 );
+    else
+      ilRc =  swPortset( ilPid, i+1, 1 );
+    if ( ilRc )
+    {
+      spw_print(&g_frame,"强置端口[%d]状态出错!\n",ilPid);      
+      swVdebug(1,"S0360: [错误/其它] 强置端口[%d]状态出错",ilPid);
+      return(FAIL);
+    }
+  }
+  spw_print(&g_frame,"强置端口[%d]状态成功!\n",ilPid); 
+  wrefresh(g_frame.main);
+  swVdebug(2,"S0370: 更新[%d]端口为DOWN",ilPid);
+  swVdebug(4,"S0380: [函数返回] swConset()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swListtran1
+ ** 功  能      : 显示正在处理的交易流水
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListtran1(char aValue[][256])
+{
+  short ilRc;       /* 返回码 */
+  char lsTmp1[10],lsTmp2[10],lsTmp3[10];
+  int  ch;
+
+  short ilTotalcount,ilCount=0;              /* 总数 */
+  short ilPagecount;               /* 本次显示数目 */
+  short i;
+  struct swt_tran_log pslSwt_tran_log[iMAXRECORD];
+  int ilEndflag,ilEndfor,ilPos; 
+
+  swVdebug(4,"S0390: [函数调用] swListtran1()");
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  ilRc = swShmselect_swt_tran_log_all(pslSwt_tran_log,&ilTotalcount);
+  if(ilRc == FAIL)
+  {
+    spw_print(&g_frame,"执行swShmselect_swt_tran_log_all失败\n");
+    swVdebug(1,"S0400: [错误/共享内存] 执行swShmselect_swt_tran_log_all失败");
+    return(FAIL);
+  }
+
+  ilPos = 0,ilEndflag=0;
+  do
+  {
+    Message("                  交易开   交易结   交易超    发起       发起\n");
+    Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+    ilPagecount=2;
+
+    for(i=ilPos;i<ilTotalcount;i++)
+    {
+      if(ilPagecount == LINECOUNT) break;	
+      _swTimeLongToChs(pslSwt_tran_log[i].tran_begin,lsTmp1,"HH:MM:SS");
+      _swTimeLongToChs(pslSwt_tran_log[i].tran_end,lsTmp2,"HH:MM:SS");
+      _swTimeLongToChs(pslSwt_tran_log[i].tran_overtime,lsTmp3,"HH:MM:SS");
+
+      Message("   %8d %2d %9.9s %9.9s %9.9s  %4d %10.10s\n",\
+        pslSwt_tran_log[i].tran_id,pslSwt_tran_log[i].tran_status,\
+        lsTmp1,lsTmp2,lsTmp3,pslSwt_tran_log[i].q_tran_begin,\
+        pslSwt_tran_log[i].tc_tran_begin );
+      ilPagecount++;
+    }
+    if(ilCount < i) ilCount = i;
+    mvwaddstr(g_frame.msg,0,0,"                  ↑↓ 翻页 W/S键 翻行 U键 刷新 Q键 退出\n"); 
+    spw_print(&g_frame,"已显示[%d]个记录\n",ilCount);
+    ilEndfor = 0;
+    wrefresh(g_frame.main);
+    for(;;)/* start for */
+    {
+      ch = getch();
+      switch(ch)
+      {
+      	 case 'Q':
+         case 'q':
+           ilEndfor = 1;
+           ilEndflag = 1;
+           break;
+         case 's' :
+           if( i < ilTotalcount )
+           {
+             ilPos = ilPos + 1 ;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case 'w' :
+           if(ilPos > 0)
+           {
+             ilPos = ilPos - 1;
+             ilEndfor = 1;
+           }
+           else 
+           {
+             ilPos = 0;
+             ilEndfor = 0;
+           }
+           break;
+         case CTRKEY_UP:
+           if(ilPos == 0) 
+           {
+             ilEndfor=0;
+             break;
+           }
+           if(ilPos < (LINECOUNT - 2)) 
+             ilPos = 0;
+           else
+             ilPos = ilPos - (LINECOUNT - 2) ; 
+           ilEndfor = 1;
+           break;
+         case CTRKEY_DOWN:
+           if(i < ilTotalcount)
+           {
+             ilPos = ilPos + (LINECOUNT - 2);
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;  
+         case 'u':
+           ilRc = swShmcheck();
+           if (ilRc != SUCCESS)
+           {
+             spw_print(&g_frame,"共享内存检测出错!\n");
+             return(FAIL);
+           }
+           ilRc = swShmselect_swt_tran_log_all(pslSwt_tran_log,&ilTotalcount);
+           if(ilRc == FAIL)
+           {
+             spw_print(&g_frame,"执行swShmselect_swt_tran_log_all失败\n");
+             swVdebug(1,"S0410: [错误/共享内存] 执行swShmselect_swt_tran_log_all失败");
+             return(FAIL);
+           }
+           ilEndfor = 1 ;
+           ilPos = ilPos ;
+           break;
+      }
+      if(ilEndfor == 1) break; 
+    }/* end for */
+    spw_redrawmain(&g_frame);
+/*    spw_redrawmsg(&g_frame);  */
+    if(ilEndflag==1) 
+    {
+      spw_redrawmsg(&g_frame);
+      break;
+    }
+  }while(1);
+
+  spw_print(&g_frame,"共有[%d]条记录\n",ilTotalcount);
+  wrefresh(g_frame.main);
+  swVdebug(4,"S0420: [函数返回] swListtran1()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swListtran2
+ ** 功  能      : 查询当前交易日处理成功的交易 
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListtran2(char aValue[][256])
+{ 
+  short ilRn;       /* 返回码 */
+  char lsTmp1[10],lsTmp2[10],lsTmp3[10];
+
+  short ilTotalcount;              /* 总数 */
+  short ilPagecount;               /* 本次显示数目 */
+  int ch;
+  
+  EXEC SQL BEGIN DECLARE  SECTION;
+    short ilTmp;
+  EXEC SQL END DECLARE  SECTION;
+  
+
+  swVdebug(4,"S0430: [函数调用] swListtran2()");
+
+  /* 打开数据库 */
+  ilRn=swDbopen();
+  if (ilRn) 
+  {
+    spw_print(&g_frame,"打开数据库失败,sqlca.sqlcode=[%d]\n",ilRn);
+    swVdebug(0,"S0440: [错误/数据库] 打开数据库失败,sqlca.sqlcode=[%d]",ilRn);
+    return(FAIL); 
+  }
+
+  EXEC SQL DECLARE tran_log_2 CURSOR FOR SELECT  *
+    FROM swt_his_tran_log WHERE tran_status = 1 ORDER BY tran_id;
+  if(sqlca.sqlcode)
+  {
+    spw_print(&g_frame,"定义游标失败,sqlca.sqlcode=[%d]\n",sqlca.sqlcode);
+    swVdebug(1,"S0450: [错误/数据库] 定义游标失败,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+    swDbclose();
+    return(FAIL);
+  }
+
+  EXEC SQL OPEN tran_log_2;
+  if(sqlca.sqlcode)
+  {
+    spw_print(&g_frame,"打开游标失败,sqlca.sqlcode=[%d]\n",sqlca.sqlcode); 
+    swVdebug(1,"S0460: [错误/数据库] 打开游标失败,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+    swDbclose();
+    return(FAIL);
+  }
+ 
+  ilTotalcount = 0;
+  Message("                  交易开   交易结   交易超    发起       发起\n");
+  Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+  ilPagecount=2;
+
+  while(TRUE)
+  {
+    memset(&sgSwt_tran_log,0x00,sizeof(struct swt_tran_log));
+    EXEC SQL FETCH tran_log_2  
+      INTO :sgSwt_tran_log.tran_id:ilTmp, 
+           :sgSwt_tran_log.tran_begin:ilTmp,
+           :sgSwt_tran_log.tran_status:ilTmp,
+           :sgSwt_tran_log.tran_end:ilTmp,
+           :sgSwt_tran_log.tran_overtime:ilTmp,
+           :sgSwt_tran_log.q_tran_begin:ilTmp,
+           :sgSwt_tran_log.tc_tran_begin:ilTmp,
+           :sgSwt_tran_log.q_target:ilTmp,
+           :sgSwt_tran_log.resq_file:ilTmp,
+           :sgSwt_tran_log.resq_offset:ilTmp,
+           :sgSwt_tran_log.resq_len:ilTmp,
+           :sgSwt_tran_log.resp_file:ilTmp,
+           :sgSwt_tran_log.resp_offset:ilTmp,
+           :sgSwt_tran_log.resp_len:ilTmp,
+           :sgSwt_tran_log.rev_key:ilTmp;	/* add by szehgnye 2002.3.12 */    
+           
+    if (sqlca.sqlcode) break;
+
+    _swTimeLongToChs(sgSwt_tran_log.tran_begin,lsTmp1,"HH:MM:SS");
+    _swTimeLongToChs(sgSwt_tran_log.tran_end,lsTmp2,"HH:MM:SS");
+    _swTimeLongToChs(sgSwt_tran_log.tran_overtime,lsTmp3,"HH:MM:SS");
+   
+    Message("   %8d %2d %9.9s %9.9s %9.9s  %4d %10.10s\n",\
+      sgSwt_tran_log.tran_id,sgSwt_tran_log.tran_status,lsTmp1,lsTmp2,\
+      lsTmp3,sgSwt_tran_log.q_tran_begin, sgSwt_tran_log.tc_tran_begin);
+
+    ilTotalcount++;
+    ilPagecount++;
+    if(ilPagecount == LINECOUNT)
+    {
+      mvwaddstr(g_frame.msg,0,0,"                            Q键 退出   其他键  继续.... \n");
+      wrefresh(g_frame.msg);
+      wrefresh(g_frame.main);
+      ch = getch();
+      if ((ch == 'q') || (ch == 'Q')) 
+      {
+        spw_redrawmain(&g_frame);
+        spw_redrawmsg(&g_frame);
+      	wrefresh(g_frame.main);
+      	break;
+      }
+      spw_redrawmain(&g_frame);
+      Message("                  交易开   交易结   交易超    发起       发起\n");
+      Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+      ilPagecount = 2;
+    }
+  }
+  EXEC SQL CLOSE tran_log_2;
+  swDbclose();
+
+  spw_print(&g_frame,"共有[%d]条记录\n",ilTotalcount);
+  wrefresh(g_frame.main);
+  swVdebug(4,"S0470: [函数返回] swListtran2()返回码=0");
+  return(SUCCESS); 
+}
+
+/**************************************************************
+ ** 函数名      : swListtran3
+ ** 功  能      : 查询冲正成功的交易 
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListtran3(char aValue[][256])
+{ 
+  short ilRn;       /* 返回码 */
+  char lsTmp1[10],lsTmp2[10],lsTmp3[10];
+  int  ch;
+  short ilTotalcount;              /* 总数 */
+  short ilPagecount;               /* 本次显示数目 */
+  EXEC SQL BEGIN DECLARE  SECTION;
+    short ilTmp3;
+  EXEC SQL END DECLARE  SECTION;
+  
+  swVdebug(4,"S0480: [函数调用] swListtran3()");
+
+  /* 打开数据库 */
+  ilRn=swDbopen();
+  if (ilRn) 
+  {
+    spw_print(&g_frame,"打开数据库失败,sqlca.sqlcode=[%d]\n",ilRn);
+    swVdebug(1,"S0490: [错误/数据库] 打开数据库失败,sqlca.sqlcode=[%d]",ilRn);
+    return(FAIL); 
+  }
+
+  EXEC SQL DECLARE tran_log_3 CURSOR FOR SELECT  *
+    FROM swt_his_tran_log WHERE tran_status = 4 ORDER BY tran_id;
+  if(sqlca.sqlcode)
+  {
+    spw_print(&g_frame,"定义游标失败,sqlca.sqlcode=[%d]\n",sqlca.sqlcode);
+    swVdebug(1,"S0500: [错误/数据库] 定义游标失败,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+    swDbclose();
+    return(FAIL);
+  }
+
+  EXEC SQL OPEN tran_log_3;
+  if(sqlca.sqlcode)
+  {
+    spw_print(&g_frame,"打开游标失败,sqlca.sqlcode=[%d]\n",sqlca.sqlcode);
+    swVdebug(1,"S0510: [错误/数据库] 打开游标失败,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+    swDbclose();
+    return(FAIL);
+  }
+
+  ilTotalcount = 0;
+  Message("                  交易开   交易结   交易超    发起       发起\n");
+  Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+  ilPagecount=2;
+
+  while(TRUE)
+  {
+    memset(&sgSwt_tran_log,0x00,sizeof(struct swt_tran_log));
+    EXEC SQL FETCH tran_log_3 
+    INTO :sgSwt_tran_log.tran_id:ilTmp3, 
+           :sgSwt_tran_log.tran_begin:ilTmp3,
+           :sgSwt_tran_log.tran_status:ilTmp3,
+           :sgSwt_tran_log.tran_end:ilTmp3,
+           :sgSwt_tran_log.tran_overtime:ilTmp3,
+           :sgSwt_tran_log.q_tran_begin:ilTmp3,
+           :sgSwt_tran_log.tc_tran_begin:ilTmp3,
+           :sgSwt_tran_log.q_target:ilTmp3,
+           :sgSwt_tran_log.resq_file:ilTmp3,
+           :sgSwt_tran_log.resq_offset:ilTmp3,
+           :sgSwt_tran_log.resq_len:ilTmp3,
+           :sgSwt_tran_log.resp_file:ilTmp3,
+           :sgSwt_tran_log.resp_offset:ilTmp3,
+           :sgSwt_tran_log.resp_len:ilTmp3,
+           :sgSwt_tran_log.rev_key:ilTmp3;	/* add by szehgnye 2002.3.12 */
+    
+    if (sqlca.sqlcode) break;
+
+    _swTimeLongToChs(sgSwt_tran_log.tran_begin,lsTmp1,"HH:MM:SS");
+    _swTimeLongToChs(sgSwt_tran_log.tran_end,lsTmp2,"HH:MM:SS");
+    _swTimeLongToChs(sgSwt_tran_log.tran_overtime,lsTmp3,"HH:MM:SS");
+    Message("   %8d %2d %9.9s %9.9s %9.9s  %4d %10.10s\n",\
+      sgSwt_tran_log.tran_id,sgSwt_tran_log.tran_status,\
+      lsTmp1,lsTmp2,lsTmp3,sgSwt_tran_log.q_tran_begin,\
+      sgSwt_tran_log.tc_tran_begin);
+
+    ilTotalcount++;
+    ilPagecount++;
+    if(ilPagecount == LINECOUNT)
+    {
+      wrefresh(g_frame.main);
+      mvwaddstr(g_frame.msg,0,0,"                            Q键 退出   其他键  继续.... \n");
+      wrefresh(g_frame.msg);
+      ch = getch();
+      if (ch == (int)'q' || ch == (int)'Q')
+      {
+        spw_redrawmain(&g_frame);
+        spw_redrawmsg(&g_frame);
+        wrefresh(g_frame.main);
+        break;
+      }
+      spw_redrawmain(&g_frame);
+      Message("                  交易开   交易结   交易超    发起       发起\n");
+      Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+      ilPagecount = 2;
+    }
+  }
+  EXEC SQL CLOSE tran_log_3;
+  swDbclose();
+  wrefresh(g_frame.main);
+  spw_print(&g_frame,"共有[%d]条记录\n",ilTotalcount);
+
+  swVdebug(4,"S0520: [函数返回] swListtran3()返回码=0");
+  return(SUCCESS); 
+}
+
+/**************************************************************
+ ** 函数名      : swListtran4
+ ** 功  能      : 查询冲正失败的交易 
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListtran4(char aValue[][256])
+{ 
+  short ilRn;       /* 返回码 */
+  char lsTmp1[10],lsTmp2[10],lsTmp3[10];
+
+  short ilTotalcount;              /* 总数 */
+  short ilPagecount;               /* 本次显示数目 */
+  int ch;
+  EXEC SQL BEGIN DECLARE  SECTION;
+    short ilTmp4;
+  EXEC SQL END DECLARE  SECTION;
+  
+  swVdebug(4,"S0530: [函数调用] swListtran4()");
+
+  /* 打开数据库 */
+  ilRn=swDbopen();
+  if (ilRn) 
+  {
+    spw_print(&g_frame,"打开数据库失败,sqlca.sqlcode=[%d]\n",ilRn);
+    swVdebug(1,"S0540: [错误/数据库] 打开数据库失败,sqlca.sqlcode=[%d]",ilRn);
+    return(FAIL); 
+  }
+
+  EXEC SQL DECLARE tran_log_4 CURSOR FOR SELECT  *
+    FROM swt_his_tran_log WHERE tran_status = 5 ORDER BY tran_id;
+  if(sqlca.sqlcode)
+  {
+    spw_print(&g_frame,"定义游标失败,sqlca.sqlcode=[%d]\n",sqlca.sqlcode);
+    swVdebug(1,"S0550: [错误/数据库] 定义游标失败,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+    swDbclose();
+    return(FAIL);
+  }
+
+  EXEC SQL OPEN tran_log_4;
+  if(sqlca.sqlcode)
+  {
+    spw_print(&g_frame,"打开游标失败,sqlca.sqlcode=[%d]\n",sqlca.sqlcode);
+    swVdebug(1,"S0560: [错误/数据库] 打开游标失败,sqlca.sqlcode=[%d]",sqlca.sqlcode);
+    swDbclose();
+    return(FAIL);
+  }
+
+  ilTotalcount=0;
+  Message("                  交易开   交易结   交易超    发起       发起\n");
+  Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+  ilPagecount=2;
+
+  while(TRUE)
+  {
+    memset(&sgSwt_tran_log, 0x00, sizeof(struct swt_tran_log));
+
+    EXEC SQL FETCH tran_log_4 
+      INTO :sgSwt_tran_log.tran_id:ilTmp4, 
+           :sgSwt_tran_log.tran_begin:ilTmp4,
+           :sgSwt_tran_log.tran_status:ilTmp4,
+           :sgSwt_tran_log.tran_end:ilTmp4,
+           :sgSwt_tran_log.tran_overtime:ilTmp4,
+           :sgSwt_tran_log.q_tran_begin:ilTmp4,
+           :sgSwt_tran_log.tc_tran_begin:ilTmp4,
+           :sgSwt_tran_log.q_target:ilTmp4,
+           :sgSwt_tran_log.resq_file:ilTmp4,
+           :sgSwt_tran_log.resq_offset:ilTmp4,
+           :sgSwt_tran_log.resq_len:ilTmp4,
+           :sgSwt_tran_log.resp_file:ilTmp4,
+           :sgSwt_tran_log.resp_offset:ilTmp4,
+           :sgSwt_tran_log.resp_len:ilTmp4,
+           :sgSwt_tran_log.rev_key:ilTmp4;	/* add by szehgnye 2002.3.12 */
+    
+    if (sqlca.sqlcode) break;
+
+    _swTimeLongToChs(sgSwt_tran_log.tran_begin,lsTmp1,"HH:MM:SS");
+    _swTimeLongToChs(sgSwt_tran_log.tran_end,lsTmp2,"HH:MM:SS");
+    _swTimeLongToChs(sgSwt_tran_log.tran_overtime,lsTmp3,"HH:MM:SS");
+    Message("   %8d %2d %9.9s %9.9s %9.9s  %4d %10.10s\n",\
+      sgSwt_tran_log.tran_id,sgSwt_tran_log.tran_status,\
+      lsTmp1,lsTmp2,lsTmp3,sgSwt_tran_log.q_tran_begin,\
+      sgSwt_tran_log.tc_tran_begin);
+
+    ilTotalcount++;
+    ilPagecount++;
+    if(ilPagecount == LINECOUNT)
+    {
+      wrefresh(g_frame.main);
+      mvwaddstr(g_frame.msg,0,0,"                            Q键 退出   其他键  继续.... \n");
+      wrefresh(g_frame.msg);
+      ch = getch();
+      if(ch == 'q'||ch == 'Q')
+      {
+        spw_redrawmain(&g_frame);
+      	spw_redrawmsg(&g_frame);
+      	wrefresh(g_frame.main);
+      	break;
+      }
+      spw_redrawmain(&g_frame);
+      Message("                  交易开   交易结   交易超    发起      发起\n");
+      Message("     流水号 状态  始时间   束时间   时时间    邮箱     交易码\n");
+      ilPagecount = 2;
+    }
+  }
+  EXEC SQL CLOSE tran_log_4;
+  swDbclose();
+  wrefresh(g_frame.main);
+  spw_print(&g_frame,"共有[%d]条记录\n",ilTotalcount);
+
+  swVdebug(4,"S0570: [函数返回] swListtran4()返回码=0");
+  return(SUCCESS); 
+}
+
+/**************************************************************
+ ** 函数名      : swResaf
+ ** 功  能      : RESAF处理
+ ** 作  者      : 张辉
+ ** 建立日期    : 1999/11/25
+ ** 最后修改日期: 2001/3/29
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swResaf(char aValue[][256])
+{
+  short ilRc;     
+  struct msghead slMsghead;
+  char  alSafid[20];
+  
+  strcpy(alSafid,aValue[1]);
+
+  swVdebug(4,"S0580: [函数调用] swResaf(%s)",alSafid);
+
+  _swTrim(alSafid);
+  if (strcmp(alSafid,"\0") == 0)
+  {
+    spw_print(&g_frame,"Saf流水号不能为空!\n");
+    return(FAIL);
+  }
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  /* 定位邮箱  */
+  if (qattach( iMBSYSCON ) != 0)
+  {
+    swVdebug(1,"S0590: [错误/邮箱] qattach()函数,错误码=-1,定位本地邮箱出错(iMBSYSCON)");
+    spw_print(&g_frame,"定位本地邮箱出错(iMBSYSCON)!\n");
+    return(FAIL);
+  }
+
+  /* 发送命令报文给任务管理器 */
+  memset(&slMsghead, 0x00, sizeof(struct msghead));
+  slMsghead.iMsgtype = iMSGORDER;
+  slMsghead.lCode = 604;
+  slMsghead.iBodylen = 0;
+  slMsghead.lSafid = atol(alSafid);
+
+  ilRc = _qwrite2((char *)&slMsghead,sizeof(struct msghead),iMBMONREV,0,0,0);
+  if (ilRc != SUCCESS)
+  {
+    swVdebug(1,"S0600: [错误/邮箱] _qwrite2()函数,错误码=%d,发送报文给MONREV失败",ilRc);
+    spw_print(&g_frame,"发送报文给MONREV失败!\n");
+    swMberror(ilRc,NULL);
+    return (FAIL);
+  }
+
+  qdetach();
+
+  spw_print(&g_frame,"重置 SAF 成功!\n");
+  wrefresh(g_frame.main);
+  swVdebug(4,"S0610: [函数返回] swResaf()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swListsaf
+ ** 功  能      : 显示SAF数据 
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListsaf(char aValue[][256])
+{
+  char lsTmp1[10],lsTmp2[10];
+  short ilRc;       /* 返回码 */
+
+  short ilPagecount;               /* 本次显示数目 */
+  short i,ilTotalcount=0;
+  struct swt_rev_saf pslSwt_rev_saf[iMAXRECORD];
+  int ch,ilCount=0;
+  int ilEndflag,ilEndfor,ilPos; 
+  
+  swVdebug(4,"S0620: [函数调用] swListsaf()");
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  /* modify by nh 20020923 
+  ilRc = swShmselect_swt_rev_saf_all(pslSwt_rev_saf,&ilTotalcount); */
+  /* del by gengling at 2015.04.03 one line PSBC_V1.0 */
+  /* ilRc = swDbselect_swt_rev_saf_all(pslSwt_rev_saf,&ilTotalcount); */
+  /* add by gengling at 2015.04.03 one line PSBC_V1.0 */
+  ilRc = swShmselect_swt_rev_saf_all(pslSwt_rev_saf,&ilTotalcount);
+  if (ilRc == SHMNOTFOUND)
+  {
+    spw_print(&g_frame,"SAF 表中未找到记录!\n");
+    swVdebug(1,"S0630: [错误/共享内存] SAF 表中未找到记录!");
+    return(FAIL);
+  }
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"查找 SAF 记录失败!\n");
+    swVdebug(1,"S0640: [错误/共享内存] 查找 SAF 记录失败!");
+    return(FAIL);
+  }
+  
+  ilPos = 0,ilEndflag=0;
+  do
+  { 
+    Message("                SAF开     SAF超   剩余冲\n");
+    Message("  流水号 状态  始时间    时时间   正次数\n");
+    ilPagecount = 2;
+
+    for(i=ilPos;i<ilTotalcount;i++)
+    {
+      if(ilPagecount == LINECOUNT) break;		
+      _swTimeLongToChs(pslSwt_rev_saf[i].saf_begin,lsTmp1,"HH:MM:SS");
+      _swTimeLongToChs(pslSwt_rev_saf[i].saf_overtime,lsTmp2,"HH:MM:SS");
+      Message("%8d   %1.1s %9.9s %9.9s %4d\n", pslSwt_rev_saf[i].tran_id,\
+        pslSwt_rev_saf[i].saf_status,lsTmp1,lsTmp2,pslSwt_rev_saf[i].saf_num);
+       ilPagecount++;
+    }
+    if(ilCount < i) ilCount = i;
+    wrefresh(g_frame.main);
+    mvwaddstr(g_frame.msg,0,0,"                    ↑↓ 翻页 W/S键 翻行 U键 刷新 Q键 退出\n");
+    spw_print(&g_frame,"已显示[%d]个记录\n",ilCount);
+    ilEndfor = 0;
+    for(;;)/* start for */
+    {
+      ch = getch();
+      switch(ch)
+      {
+      	 case 'Q':
+         case 'q':
+           ilEndfor = 1;
+           ilEndflag = 1;
+           break;
+         case 's' :
+           if( i < ilTotalcount )
+           {
+             ilPos = ilPos + 1 ;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case 'w' :
+           if(ilPos > 0)
+           {
+             ilPos = ilPos - 1;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case CTRKEY_UP:
+           if(ilPos == 0) 
+           {
+             ilEndfor=0;
+             break;
+           }
+           if(ilPos < (LINECOUNT - 2)) 
+             ilPos = 0;
+           else
+             ilPos = ilPos - (LINECOUNT - 2) ; 
+           ilEndfor = 1;
+           break;
+         case CTRKEY_DOWN:
+           if(i < ilTotalcount)
+           {
+             ilPos = ilPos + (LINECOUNT - 2);
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;  
+         case 'u':
+           ilRc = swShmcheck();
+           if (ilRc != SUCCESS)
+           {
+             spw_print(&g_frame,"共享内存检测出错!\n");
+             return(FAIL);
+           }
+           /* modify by nh 20020923 
+           ilRc = swShmselect_swt_rev_saf_all(pslSwt_rev_saf,&ilTotalcount);*/
+	   /* del by gengling at 2015.04.03 one line PSBC_V1.0 */
+           /* ilRc = swDbselect_swt_rev_saf_all(pslSwt_rev_saf,&ilTotalcount); */
+	   /* add by gengling at 2015.04.03 one line PSBC_V1.0 */
+	   ilRc = swShmselect_swt_rev_saf_all(pslSwt_rev_saf,&ilTotalcount);
+           if (ilRc == SHMNOTFOUND)
+           {
+             spw_print(&g_frame,"SAF 表中未找到记录!\n");
+             swVdebug(1,"S0650: [错误/共享内存] SAF 表中未找到记录!");
+             return(FAIL);
+           }
+           if (ilRc != SUCCESS)
+           {
+             spw_print(&g_frame,"查找 SAF 记录失败!\n");
+             swVdebug(1,"S0660: [错误/共享内存] 查找 SAF 记录失败!");
+             return(FAIL);
+           }
+           ilEndfor = 1 ;
+           ilPos = ilPos ;
+           break;
+      }
+      if(ilEndfor == 1) break; 
+    }/* end for */
+    spw_redrawmain(&g_frame);
+/*    spw_redrawmsg(&g_frame);  */
+    if(ilEndflag==1) break;
+  }while(1);
+
+  spw_print(&g_frame,"共有[%d]条记录\n",ilTotalcount);
+  wrefresh(g_frame.main);
+  swVdebug(4,"S0670: [函数返回] swListsaf()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swClrsaf
+ ** 功  能      : 清除SAF
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swClrsaf(char aValue[][256])
+{
+  struct swt_rev_saf pslSwt_rev_saf[iMAXRECORD];
+  short ilRc,i,ilCount=0,j = 0,ilAnswer;      
+  long  llSaf_id,llTranid;
+  char alTranid[20];
+  
+  strcpy(alTranid,aValue[1]);
+  swVdebug(4,"S0680: [函数调用] swClrsaf(%s)",alTranid);
+
+  _swTrim(alTranid);
+  if (strcmp(alTranid,"\0") == 0) 
+  {
+    spw_print(&g_frame,"流水号不能为空(为-1:清所有)！\n");
+    return(FAIL);
+  }
+  
+  llTranid = atol(alTranid); 
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  /* modify by nh 20020923 
+  ilRc = swShmselect_swt_rev_saf_all(pslSwt_rev_saf,&ilCount);*/
+  /* del by gengling at 2015.04.03 one line PSBC_V1.0 */
+  /* ilRc = swDbselect_swt_rev_saf_all(pslSwt_rev_saf,&ilCount); */
+  /* add by gengling at 2015.04.03 one line PSBC_V1.0 */
+  ilRc = swShmselect_swt_rev_saf_all(pslSwt_rev_saf,&ilCount);
+  if (ilRc == SHMNOTFOUND)
+  {
+    spw_print(&g_frame,"SAF 表中未找到记录!\n");
+    swVdebug(1,"S0690: [错误/共享内存] SAF 表中未找到记录!");
+    return(FAIL);
+  }
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"查找 SAF 记录失败!\n");
+    swVdebug(1,"S0700: [错误/共享内存] 查找 SAF 记录失败!");
+    return(FAIL);
+  }
+
+  if(llTranid == -1) 
+  {
+    spw_print(&g_frame,"确认要清空表中的所有记录吗? (Y/N)");
+    ilAnswer = getchar();
+    waddch(g_frame.msg,ilAnswer);
+    waddch(g_frame.msg,'\n');
+    wrefresh(g_frame.msg);
+    if (ilAnswer != 'y' && ilAnswer != 'Y') return(FAIL); 
+    
+    for(i=0;i<ilCount;i++)
+    {
+      /* modify by nh 20020923 
+      ilRc = swShmdelete_swt_rev_saf(pslSwt_rev_saf[i].saf_id);*/
+      /* del by gengling at 2015.04.03 one line PSBC_V1.0 */
+      /* ilRc = swDbdelete_swt_rev_saf(pslSwt_rev_saf[i].saf_id); */
+      /* add by gengling at 2015.04.03 one line PSBC_V1.0 */
+      ilRc = swShmdelete_swt_rev_saf(pslSwt_rev_saf[i].saf_id);
+      if (ilRc != SUCCESS)
+      {
+        swVdebug(1,"S0710: [错误/共享内存] 执行swShmdelete_swt_rev_saf出错");
+        spw_print(&g_frame,"删除 SAF 记录失败!\n");
+        spw_print(&g_frame,"删除了[%d]条SAF记录]\n",ilCount);
+        return(FAIL);
+      }
+    }
+    spw_print(&g_frame,"删除了[%d]条SAF记录\n",ilCount);
+
+    swVdebug(4,"S0720: [函数返回] swClrsaf()返回码=0");
+    return(SUCCESS);
+  }
+  j=0;
+  for (i = 1;i < ilCount;i++)
+  {
+    if (pslSwt_rev_saf[i].tran_id == llTranid)
+    {
+      llSaf_id = pslSwt_rev_saf[i].saf_id;
+      /* modify by nh 20020923 
+      ilRc = swShmdelete_swt_rev_saf(llSaf_id);*/
+      /* del by gengling at 2015.04.03 one line PSBC_V1.0 */
+      /* ilRc = swDbdelete_swt_rev_saf(llSaf_id); */
+      /* add by gengling at 2015.04.03 one line PSBC_V1.0 */
+      ilRc = swShmdelete_swt_rev_saf(pslSwt_rev_saf[i].saf_id);
+      if (ilRc != SUCCESS)
+      {
+        swVdebug(1,"S0730: [错误/共享内存] 执行swShmdelete_swt_rev_saf出错");
+        spw_print(&g_frame,"删除 SAF 记录出错!\n");
+        spw_print(&g_frame,"已删除[%d]条SAF记录!\n",j);
+        return(FAIL);
+      }
+      j ++;
+    }
+  }
+  spw_print(&g_frame,"删除[%d]条SAF记录!\n",j);
+  wrefresh(g_frame.main);
+  swVdebug(4,"S0740: [函数返回] swClrsaf()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swListport
+ ** 功  能      : 查看端口状态
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swListport(char aValue[][256])
+{
+  short i,j;
+  short ilCount=0,ilTotalcount=0,ilRc;
+  struct swt_sys_queue  slSwt_sys_queue[300];
+  char  alPortname[21];
+  int   ilPagecount;
+  int   ilTemp[8];
+  char alQ_id[10];
+  int   ch,ilEndflag,ilEndfor,ilPos;
+
+  swVdebug(4,"S0750: [函数调用] swListport(%s)",alQ_id);
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+  
+  ilRc = swShmselect_swt_sys_queue_all(slSwt_sys_queue,&ilTotalcount);
+  if (ilRc != SUCCESS)
+  {
+    swVdebug(1,"S0760: [错误/共享内存] 执行 swShmselect_swt_sys_queue_all 失败!"); 
+    spw_print(&g_frame,"执行 swShmselect_swt_sys_queue_all 失败! ilRc = %d\n",ilRc);
+    return(FAIL);
+  }
+  
+  ilPos=0,ilEndflag=0,ilCount=0;
+  do 
+  {
+    ilPagecount = 1; 
+    Message("     端口号    名称             通讯层  应用层    Q层   Echotest层  人工干预层\n");
+    for (i=ilPos;i<ilTotalcount;i++)
+    {
+      if(ilPagecount == LINECOUNT) break;	
+      for(j=0;j<8;j++)
+      {
+        if ( slSwt_sys_queue[i].port_status & (128>>j) )
+          ilTemp[j]=1;
+        else
+          ilTemp[j]=0;
+      }
+
+      if (strlen(slSwt_sys_queue[i].q_name) > 20)
+      {
+        memcpy(alPortname,slSwt_sys_queue[i].q_name,17);
+        alPortname[17] = '\0';
+        strcat(alPortname,"...");
+      }
+      else
+        strncpy(alPortname,slSwt_sys_queue[i].q_name,20);
+
+      Message("%8d  %-24s%-8d%-8d%-10d%-10d%-8d\n", slSwt_sys_queue[i].q_id,
+        alPortname,ilTemp[0],ilTemp[1],ilTemp[2],ilTemp[3],ilTemp[4]);
+      ilPagecount++;
+    }
+    if(ilCount<i) ilCount = i ;
+    wrefresh(g_frame.main);
+    mvwaddstr(g_frame.msg,0,0,"                      ↑↓ 翻页 W/S键 翻行 U键 刷新 Q键 退出\n");
+    spw_print(&g_frame,"已显示[%d]个端口信息[1:UP 0:DOWN]\n",ilCount);
+    ilEndfor = 0;
+    for(;;)/* start for */
+    {
+      ch = getch();
+      switch(ch)
+      {
+      	 case 'Q':
+         case 'q':
+           ilEndfor = 1;
+           ilEndflag = 1;
+           break;
+         case 's' :
+           if(i<ilTotalcount)
+           {
+              ilPos = ilPos + 1 ;
+              ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case 'w' :
+           if(ilPos > 0)
+           {
+             ilPos = ilPos - 1;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;;
+           break;
+         case CTRKEY_UP:
+           if(ilPos == 0) 
+           {
+             ilEndfor=0;
+             break;
+           }
+           if(ilPos < (LINECOUNT - 1) ) ilPos = 0;
+           else ilPos = ilPos - (LINECOUNT - 1) ; 
+           ilEndfor = 1;
+           break;
+         case CTRKEY_DOWN:
+           if(i < ilTotalcount)
+           {
+             ilEndfor = 1; 
+             ilPos = ilPos + (LINECOUNT - 1);
+           }
+           else ilEndfor = 0;
+           break;  
+         case 'u':
+           ilRc = swShmcheck();
+           if (ilRc != SUCCESS)
+           {
+             spw_print(&g_frame,"共享内存检测出错!\n");
+             return(FAIL);
+           }
+           ilRc = swShmselect_swt_sys_queue_all(slSwt_sys_queue,&ilTotalcount);
+           if (ilRc != SUCCESS)
+           {
+             swVdebug(1,"S0770: [错误/共享内存] 执行 swShmselect_swt_sys_queue_all 失败!"); 
+             spw_print(&g_frame,"执行 swShmselect_swt_sys_queue_all 失败! ilRc = %d\n",ilRc);
+             return(FAIL);
+           }
+           ilEndfor = 1 ;
+           ilPos = ilPos ;
+           break;
+      }
+      if(ilEndfor == 1) break; 
+    }
+    spw_redrawmain(&g_frame);
+/*    spw_redrawmsg(&g_frame);  */
+    if(ilEndflag==1) break;
+  }while(1);
+  wrefresh(g_frame.main);
+  spw_print(&g_frame,"总共有[%d]个端口信息\n",ilTotalcount);
+
+  swVdebug(4,"S0780: [函数返回] swListport()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      : swClrmailbox
+ ** 功  能      : 清空邮箱
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/23
+ ** 最后修改日期: 
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swClrmailbox(char aValue[][256])
+{
+  int ilRc,ilQid;
+  short ilAnswer;
+  char  alQid[10];
+
+  swVdebug(4,"S0790: [函数调用] swClrmailbox(%s)",alQid);
+  
+  strcpy(alQid,aValue[1]);
+  _swTrim(alQid);
+  if (strcmp(alQid,"\0") == 0)
+  {
+    spw_print(&g_frame,"邮箱号不能为空!\n");
+    return(FAIL);
+  } 
+
+  ilQid = atoi(alQid);
+  if (ilQid == 0)
+  {
+    spw_print(&g_frame,"确认要清空所有邮箱吗? (Y/N)  ");
+    ilAnswer = getch();
+    waddch(g_frame.msg,ilAnswer);
+    waddch(g_frame.msg,'\n');
+    wrefresh(g_frame.msg);
+    if (ilAnswer != 'y' && ilAnswer != 'Y')  return(FAIL);
+  }
+ 
+  ilRc = bmqOpen(iMBSYSCON);
+  if (ilRc)
+  {
+    swVdebug(0,"S0800: [错误/邮箱] bmqOpen()函数,错误码=%d",ilRc);
+    spw_print(&g_frame,"打开邮箱[iMBSYSCON]出错! ilRc = %d\n",ilRc);
+    return(FAIL);
+  }
+
+  ilRc = bmqClearmb(ilQid);
+  if (ilRc)
+  {
+    spw_print(&g_frame,"清空邮箱失败\n");
+    ilRc = bmqClose();
+    if (ilRc)
+    {
+      swVdebug(0,"S0810: [错误/邮箱] bmqClose()函数,错误码=%d",ilRc);
+      spw_print(&g_frame,"关闭邮箱[iMBSYSCON]出错! ilRc = %d\n",ilRc);
+      return(FAIL);
+    }
+    return(FAIL);
+  }
+  spw_print(&g_frame,"清空邮箱成功\n");
+  wrefresh(g_frame.main);
+  ilRc = bmqClose();
+  if (ilRc)
+  {
+    swVdebug(0,"S0820: [错误/邮箱] bmqClose()函数,错误码=%d",ilRc);
+    spw_print(&g_frame,"关闭邮箱[iMBSYSCON]出错! ilRc = %d\n",ilRc);
+    return(FAIL);
+  }
+
+  swVdebug(4,"S0830: [函数返回] swClrmailbox()返回码=0");
+  return(SUCCESS);
+}
+   
+/**************************************************************
+ ** 函数名      : swListmailbox
+ ** 功  能      : 显示邮箱信息
+ ** 作  者      : 顾晓忠
+ ** 建立日期    : 2001/08/23
+ ** 最后修改日期: 
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+extern int swListmailbox(char aValue[][256])
+{
+
+  short ilRc,i;
+  struct mbinfo slMbinfo;
+  int  ch;
+  short ilCount,ilPreviou,ilNext,ilOK;              /* 总数 */
+  short ilPagecount =0;              /* 本次显示数目 */
+  int ilEndflag,ilEndfor,ilPos,ilDownflag; 
+  swVdebug(4,"S0840: [函数调用] swListmailbox()");
+
+  ilRc = bmqOpen(iMBSYSCON);
+  if (ilRc)
+  {
+    swVdebug(0,"S0850: [错误/邮箱] bmqOpen()函数,错误码=%d",ilRc);
+    spw_print(&g_frame,"打开邮箱(iMBSYSCON)出错!");
+    return(FAIL);
+  }
+  
+  ilPos=1,ilEndflag=0,ilCount=0,ilDownflag = 1,ilOK = 0;
+  do 
+  {
+    Message("      邮箱号    接收条数    发送条数    余留条数    连接数  \n");
+    ilPagecount = 1; 
+    
+    i = ilPos;
+    memset(&slMbinfo,0x0,sizeof(struct mbinfo));
+    while((ilRc = bmqGetmbinfo(i,&slMbinfo)) != 100)
+    {
+      if (ilRc == -1)
+      {
+        swVdebug(1,"S0860: [错误/邮箱] bmqGetmbinfo()函数,错误码=%d",ilRc);
+        spw_print(&g_frame,"调用函数bmqGetmbinfo()出错,ilRc = %d",ilRc);
+        return(FAIL);
+      }    	
+      if(ilPagecount == LINECOUNT)
+      {
+         ilNext = i;
+         break;
+      }
+      if ( ilRc || slMbinfo.lSendnum || slMbinfo.lRecvnum || slMbinfo.lPendnum || slMbinfo.iConnect )
+      {    
+        Message("       %-7d    %-8d    %-7d     %-7d     %-6d\n", \
+          i, slMbinfo.lRecvnum, slMbinfo.lSendnum, slMbinfo.lPendnum,
+          slMbinfo.iConnect);
+
+        ilPagecount++;
+        if(ilPagecount == 2) ilPreviou = i;
+        if(i > ilOK)
+        {
+          ilCount++;
+          ilOK = i;
+        }
+      }
+      i++;
+      memset(&slMbinfo,0x0,sizeof(struct mbinfo));
+    }
+
+    wrefresh(g_frame.main);    
+    mvwaddstr(g_frame.msg,0,0,"                     ↑↓ 翻页 W/S键 翻行 U键 刷新 Q键 退出\n"); 
+    spw_print(&g_frame,"已显示[%d]个邮箱信息\n",ilCount);
+
+    ilEndfor = 0;
+    for(;;)/* start for */
+    {
+      ch = getch();
+      switch(ch)
+      {
+      	 case 'Q':
+         case 'q':
+           ilEndfor = 1;
+           ilEndflag = 1;
+           break;
+         case 's' :
+           if( i <= 100 )
+           {
+             ilPos = ilPreviou + 1 ;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case 'w' :
+           if(ilPos > 1)
+           {
+             ilPos = swGetmbNO(ilPreviou,1);	
+             /* ilPos = ilPos - 1; */
+             ilEndfor = 1;
+           }
+           else 
+             ilEndfor = 0;
+           break;
+         case CTRKEY_UP:
+           if(ilPos == 1) 
+           {
+             ilEndfor=0;
+             break;
+           }
+           ilPos = swGetmbNO(ilPreviou,LINECOUNT-1); 
+           ilEndfor = 1;
+           break;
+         case CTRKEY_DOWN:
+           if( i <= 100)
+           {
+             ilEndfor = 1; 
+             ilPos = ilNext;
+           }
+           else ilEndfor = 0;
+           break;  
+         case 'u':
+           ilEndfor = 1 ;
+           ilPos = ilPos ;
+           break;
+      }
+      if(ilEndfor == 1) break; 
+    }
+    spw_redrawmain(&g_frame);
+    if(ilEndflag==1) break;
+  }while(1);  
+  
+  spw_print(&g_frame,"共有[%d]个邮箱信息\n",ilCount);
+  wrefresh(g_frame.main);
+  ilRc = bmqClose();
+  if (ilRc)
+  {
+    swVdebug(0,"S0870: [错误/邮箱] bmqClose()函数,错误码=%d",ilRc);
+    spw_print(&g_frame,"关闭邮箱[iMBSYSCON]出错! ilRc = %d\n",ilRc);
+    return(FAIL);
+  }
+
+  swVdebug(4,"S0880: [函数返回] swListmailbox()返回码=0");
+  return(SUCCESS);
+}
+
+/********************************************************************/
+int swGetmbNO(int iCurrent,int iNum)
+{
+  int i,ilRc;
+  struct mbinfo slMbinfo;
+  
+  memset(&slMbinfo,0x0,sizeof(struct mbinfo));
+  i = 1;
+  if( iCurrent-i <= 1) return(1); 
+  while((ilRc = bmqGetmbinfo(iCurrent - i,&slMbinfo)) != 100)
+  {
+    if (ilRc == -1)
+    {
+      swVdebug(1,"S0890: [错误/邮箱] bmqGetmbinfo()函数,错误码=%d",ilRc);
+      spw_print(&g_frame,"调用函数bmqGetmbinfo()出错,ilRc = %d",ilRc);
+      return(FAIL);
+    }
+    if( ilRc || slMbinfo.lSendnum || slMbinfo.lRecvnum || slMbinfo.lPendnum || slMbinfo.iConnect )
+      iNum--;
+    if(iNum==0) return(iCurrent - i);
+    i++; 
+    if( iCurrent - i <= 1) return(1);
+    memset(&slMbinfo,0x0,sizeof(struct mbinfo));
+  } 
+  return(0);
+}
+/******************************************************************/
+/* === begin of added by fzj at 2002.03.02 === */
+/**************************************************************
+ ** 函数名      : swListporttran
+ ** 功  能      : 查看端口交易数
+ ** 作  者      : fanzhijie
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swListporttran(char *alQ_id)
+{
+  short i,ilQ_id_where;
+  short ilCount,ilTotalcount,ilRc;
+  struct swt_sys_queue  slSwt_sys_queue[400];
+  int   ilPagecount;
+  int   ch,ilEndflag,ilEndfor,ilPos;
+
+  swVdebug(4,"S0900: [函数调用] swListport(%s)",alQ_id);
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    Message("共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  if (strcmp(alQ_id,"\0") == 0)
+    ilQ_id_where = 0;
+  else
+    ilQ_id_where = atoi(alQ_id);
+
+  ilRc = swShmselect_swt_sys_queue_all(slSwt_sys_queue,&ilTotalcount);
+  if (ilRc != SUCCESS)
+  {
+    swVdebug(1,"S0910: [错误/共享内存] 执行 swShmselect_swt_sys_queue_all 失败!"); 
+    spw_print(&g_frame,"执行 swShmselect_swt_sys_queue_all 失败! ilRc = %d\n",ilRc);
+    return(FAIL);
+  }
+  
+  ilPos=0,ilEndflag=0,ilCount=0;
+  do 
+  {
+    ilPagecount = 1; 
+    Message("\n  端口号  源发交易数  最大源发交易数  处理交易数  最大处理交易数\n");
+    for (i=ilPos;i<ilTotalcount;i++)
+    {
+      if (ilQ_id_where > 0)
+        if (slSwt_sys_queue[i].q_id != ilQ_id_where) continue;
+        
+      if(ilPagecount == LINECOUNT) break;
+      Message("  %6d  %10d  %12d  %10d  %12d\n", slSwt_sys_queue[i].q_id, slSwt_sys_queue[i].tranbegin_num, slSwt_sys_queue[i].tranbegin_max, slSwt_sys_queue[i].traning_num, slSwt_sys_queue[i].traning_max);      	
+      ilPagecount++;
+    }
+    if(ilCount<i) ilCount = i ;
+    wrefresh(g_frame.main);
+    mvwaddstr(g_frame.msg,0,0,"                      ↑↓ 翻页 W/S键 翻行 U键 刷新 Q键 退出\n");
+    spw_print(&g_frame,"已显示[%d]个端口信息\n",ilCount);
+    ilEndfor = 0;
+    for(;;)/* start for */
+    {
+      ch = getch();
+      switch(ch)
+      {
+      	 case 'Q':
+         case 'q':
+           ilEndfor = 1;
+           ilEndflag = 1;
+           break;
+         case 's' :
+           if(i<ilTotalcount)
+           {
+              ilPos = ilPos + 1 ;
+              ilEndfor = 1;
+           }
+           else ilEndfor = 0;
+           break;
+         case 'w' :
+           if(ilPos > 0)
+           {
+             ilPos = ilPos - 1;
+             ilEndfor = 1;
+           }
+           else ilEndfor = 0;;
+           break;
+         case CTRKEY_UP:
+           if(ilPos == 0) 
+           {
+             ilEndfor=0;
+             break;
+           }
+           if(ilPos < (LINECOUNT - 1) ) ilPos = 0;
+           else ilPos = ilPos - (LINECOUNT - 1) ; 
+           ilEndfor = 1;
+           break;
+         case CTRKEY_DOWN:
+           if(i < ilTotalcount)
+           {
+             ilEndfor = 1; 
+             ilPos = ilPos + (LINECOUNT - 1);
+           }
+           else ilEndfor = 0;
+           break;  
+         case 'u':
+           ilRc = swShmcheck();
+           if (ilRc != SUCCESS)
+           {
+             spw_print(&g_frame,"共享内存检测出错!\n");
+             return(FAIL);
+           }
+           ilRc = swShmselect_swt_sys_queue_all(slSwt_sys_queue,&ilTotalcount);
+           if (ilRc != SUCCESS)
+           {
+             swVdebug(1,"S0920: [错误/共享内存] 执行 swShmselect_swt_sys_queue_all 失败!"); 
+             spw_print(&g_frame,"执行 swShmselect_swt_sys_queue_all 失败! ilRc = %d\n",ilRc);
+             return(FAIL);
+           }
+           ilEndfor = 1 ;
+           ilPos = ilPos ;
+           break;
+      }
+      if(ilEndfor == 1) break; 
+    }
+    spw_redrawmain(&g_frame);
+    if(ilEndflag==1) break;
+  }while(1);
+  wrefresh(g_frame.main);
+  spw_print(&g_frame,"总共有[%d]个端口信息\n",ilTotalcount);  
+
+  swVdebug(4,"S0930: [函数返回] swListporttran()返回码=0");
+  return(SUCCESS);
+}
+/* === end of added by fzj at 2002.03.02 === */
+
+/* === begin of added by fzj at 2002.03.02 === */
+/**************************************************************
+ ** 函数名      : swResetporttran
+ ** 功  能      : 重置端口交易数
+ ** 作  者      : fanzhijie
+ ** 建立日期    : 2001/08/20
+ ** 最后修改日期: 
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : SUCCESS/FAIL
+***************************************************************/
+int swResetporttran()
+{
+  int ilRc;
+
+  swVdebug(4,"S0940: [函数调用] swResetporttran()");
+
+  ilRc = swShmcheck();
+  if (ilRc != SUCCESS)
+  {
+    spw_print(&g_frame,"共享内存检测出错!\n");
+    return(FAIL);
+  }
+
+  ilRc = swShmresetporttran();
+  if (ilRc)
+  {
+    spw_print(&g_frame,"重置端口交易数出错!\n");
+    return(FAIL);
+  }
+  spw_print(&g_frame,"重置端口交易数成功 !\n");
+  return(SUCCESS);
+}
+/* === end of added by fzj at 2002.03.02 === */
+

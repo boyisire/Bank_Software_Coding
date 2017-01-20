@@ -1,0 +1,3 @@
+ROUTEDESC=网银第三方存管系统交易端口
+[ROUTE]
+10 SEND 87 WITH END

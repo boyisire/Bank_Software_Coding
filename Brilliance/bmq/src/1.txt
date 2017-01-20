@@ -1,0 +1,60 @@
+#./getsrc bmq bmqapi.c
+cc -Wall -g -c -D _LINUXES_ -o bmqapi.o -I/home/switch/bmq/inc bmqapi.c
+#./rmsrc bmqapi.c
+#./getsrc bmq bmqLicense.c
+cc -Wall -g -c -D _LINUXES_ -o bmqLicense.o -I/home/switch/bmq/inc bmqLicense.c
+#./rmsrc bmqLicense.c
+#./getsrc bmq bmqcommpub.c
+cc -Wall -g -c -D _LINUXES_ -o bmqcommpub.o -I/home/switch/bmq/inc bmqcommpub.c
+#./rmsrc bmqcommpub.c
+#./getsrc bmq bmqusrfun.c
+cc -Wall -g -c -D _LINUXES_ -o bmqusrfun.o -I/home/switch/bmq/inc bmqusrfun.c
+#./rmsrc bmqusrfun.c
+#./getsrc bmq swXmldoc.c
+cc -Wall -g -c -D _LINUXES_ -o swXmldoc.o -I/home/switch/bmq/inc swXmldoc.c
+#./rmsrc swXmldoc.c
+ar rv /home/switch/bmq/lib/libbmqapi.a \
+	bmqapi.o bmqLicense.o bmqcommpub.o bmqusrfun.o swXmldoc.o
+r - bmqapi.o
+r - bmqLicense.o
+r - bmqcommpub.o
+r - bmqusrfun.o
+r - swXmldoc.o
+mv bmqapi.o bmqLicense.o /home/switch/bmq/tmp
+#./getsrc bmq bmqstartup.c
+cc -Wall -g -c -D _LINUXES_ -o bmqstartup.o -I/home/switch/bmq/inc bmqstartup.c
+#./rmsrc bmqstartup.c
+cc -o /home/switch/bmq/bin/bmqstartup bmqstartup.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqstartup.o /home/switch/bmq/tmp
+#./getsrc bmq bmqshutdown.c
+cc -Wall -g -c -D _LINUXES_ -o bmqshutdown.o -I/home/switch/bmq/inc bmqshutdown.c
+#./rmsrc bmqshutdown.c
+cc -o /home/switch/bmq/bin/bmqshutdown bmqshutdown.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqshutdown.o /home/switch/bmq/tmp
+#./getsrc bmq bmqmng.c
+cc -Wall -g -c -D _LINUXES_ -o bmqmng.o -I/home/switch/bmq/inc bmqmng.c
+#./rmsrc bmqmng.c
+cc -g -o /home/switch/bmq/bin/bmqmng bmqmng.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqmng.o /home/switch/bmq/tmp
+#./getsrc bmq bmqclean.c
+cc -Wall -g -c -D _LINUXES_ -o bmqclean.o -I/home/switch/bmq/inc bmqclean.c
+#./rmsrc bmqclean.c
+cc -g -o /home/switch/bmq/bin/bmqclean bmqclean.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqclean.o /home/switch/bmq/tmp
+#./getsrc bmq bmqGrp_snd.c
+cc -Wall -g -c -D _LINUXES_ -o bmqGrp_snd.o -I/home/switch/bmq/inc bmqGrp_snd.c
+#./rmsrc bmqGrp_snd.c
+cc -g -o /home/switch/bmq/bin/bmqGrp_snd bmqGrp_snd.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqGrp_snd.o /home/switch/bmq/tmp
+#./getsrc bmq bmqGrp_rcv.c
+cc -Wall -g -c -D _LINUXES_ -o bmqGrp_rcv.o -I/home/switch/bmq/inc bmqGrp_rcv.c
+#./rmsrc bmqGrp_rcv.c
+cc -g -o /home/switch/bmq/bin/bmqGrp_rcv bmqGrp_rcv.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqGrp_rcv.o /home/switch/bmq/tmp
+#./getsrc bmq bmqGrp_rcvs.c
+cc -Wall -g -c -D _LINUXES_ -o bmqGrp_rcvs.o -I/home/switch/bmq/inc bmqGrp_rcvs.c
+#./rmsrc bmqGrp_rcvs.c
+cc -g -o /home/switch/bmq/bin/bmqGrp_rcvs bmqGrp_rcvs.o -L/home/switch/bmq/lib -lbmqapi -lz -lbz2 -lgmp -lpthread
+mv bmqGrp_rcvs.o /home/switch/bmq/tmp
+#./getsrc bmq bmqGrp_rcvw.c
+cc -Wall -g -c -D _LINUXES_ -o bmqGrp_rcvw.o -I/home/switch/bmq/inc bmqGrp_rcvw.c

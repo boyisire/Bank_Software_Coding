@@ -1,0 +1,137 @@
+FMTDESC=黄金提货申请查询应答
+TRANTYPE=104
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+#黄金提货申请查询 应答	051302
+
+10 DO XMLINIT(root,GBK)
+20 TDF 5500000022
+
+
+
+#   2011-05-19 add 
+100 FIELD 20 = ADDNODE( /root/pri,DQDJY,FML(DQDJY))
+110 FIELD 21 = ADDNODE( /root/pri,CXJLS,FML(CXJLS))
+120 FIELD 22 = ADDNODE( /root/pri,FHJLS,FML(row))
+130 FIELD 23 = ADDNODE( /root/pri,ZYS,FML(ZYS))
+140 FIELD 24 = ADDNODE( /root/pri,ZJLS,FML(ROW))
+ 
+200 FIELD 10 = ADDNODE(/root/pri, muldata , SPACE(0))
+#增加 /root/pri/muldata下col结点,通过读以下多笔返回一共多少列来赋值.
+210 FIELD 11 = ADDNODE(/root/pri/muldata,col,23 )
+#增加 /root/pri/muldata下row结点,从FML域中取值
+220 FIELD 12 = ADDNODE(/root/pri/muldata,row,FML(row))
+#增加 head结点
+230 FIELD 13 = ADDNODE(/root/pri/muldata,head, SPACE(0))
+700  FIELD 120 = ADDNODE( /root/pri,FAXTYPE    ,FML(FAXTYPE    ))    #传真类型 传真专用
+701  FIELD 121 = ADDNODE( /root/pri,ZHKH    ,FML(ZHKH    ))    #账号卡号 账号卡号
+ 
+#增加多列
+300 FIELD 20 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+310 FIELD 21 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+320 FIELD 22 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+330 FIELD 23 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+340 FIELD 24 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+350 FIELD 25 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+360 FIELD 26 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+370 FIELD 27 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+380 FIELD 28 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+390 FIELD 29 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+400 FIELD 30 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+410 FIELD 31 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+420 FIELD 32 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+430 FIELD 33 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+440 FIELD 34 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+450 FIELD 35 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+460 FIELD 36 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+470 FIELD 37 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+480 FIELD 38 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+490 FIELD 39 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+500 FIELD 40 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+510 FIELD 41 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+520 FIELD 42 = ADDNODE(/root/pri/muldata/head,colname,SPACE(0))
+ 
+#序号	SEQNUM	返回多笔
+600 FIELD 50  = ADDPROP(/root/pri/muldata/head/colname[1], Name, BDTHLSH)
+601 FIELD 51  = ADDPROP(/root/pri/muldata/head/colname[1], Chinese,本地提货流水号)
+602 FIELD 52  = ADDPROP(/root/pri/muldata/head/colname[1], Type, String)
+603 FIELD 53  = ADDPROP(/root/pri/muldata/head/colname[2], Name, ZHKH)
+604 FIELD 54  = ADDPROP(/root/pri/muldata/head/colname[2], Chinese,银行账号)
+605 FIELD 55  = ADDPROP(/root/pri/muldata/head/colname[2], Type, String)
+606 FIELD 56  = ADDPROP(/root/pri/muldata/head/colname[3], Name, KHMC)
+607 FIELD 57  = ADDPROP(/root/pri/muldata/head/colname[3], Chinese,客户名称)
+608 FIELD 58  = ADDPROP(/root/pri/muldata/head/colname[3], Type, String)
+609 FIELD 59  = ADDPROP(/root/pri/muldata/head/colname[4], Name, THDH)
+610 FIELD 60  = ADDPROP(/root/pri/muldata/head/colname[4], Chinese,提货单号)
+611 FIELD 61  = ADDPROP(/root/pri/muldata/head/colname[4], Type, String)
+612 FIELD 62  = ADDPROP(/root/pri/muldata/head/colname[5], Name, SQRQ)
+613 FIELD 63  = ADDPROP(/root/pri/muldata/head/colname[5], Chinese,申请日期)
+614 FIELD 64  = ADDPROP(/root/pri/muldata/head/colname[5], Type, String)
+615 FIELD 65  = ADDPROP(/root/pri/muldata/head/colname[6], Name, THKSRQ)
+616 FIELD 66  = ADDPROP(/root/pri/muldata/head/colname[6], Chinese,提货开始日期)
+617 FIELD 67  = ADDPROP(/root/pri/muldata/head/colname[6], Type, String)
+618 FIELD 68  = ADDPROP(/root/pri/muldata/head/colname[7], Name, THJSRQ)
+619 FIELD 69  = ADDPROP(/root/pri/muldata/head/colname[7], Chinese,提货结束日期)
+620 FIELD 70  = ADDPROP(/root/pri/muldata/head/colname[7], Type, String)
+621 FIELD 71  = ADDPROP(/root/pri/muldata/head/colname[8], Name, YHTHR)
+622 FIELD 72  = ADDPROP(/root/pri/muldata/head/colname[8], Chinese,银行提货日)
+623 FIELD 73  = ADDPROP(/root/pri/muldata/head/colname[8], Type, String)
+624 FIELD 74  = ADDPROP(/root/pri/muldata/head/colname[9], Name, CLXX)
+625 FIELD 75  = ADDPROP(/root/pri/muldata/head/colname[9], Chinese,处理信息)
+626 FIELD 76  = ADDPROP(/root/pri/muldata/head/colname[9], Type, String)
+627 FIELD 77  = ADDPROP(/root/pri/muldata/head/colname[10], Name, THZT)
+628 FIELD 78  = ADDPROP(/root/pri/muldata/head/colname[10], Chinese,提货状态)
+629 FIELD 79  = ADDPROP(/root/pri/muldata/head/colname[10], Type, String)
+630 FIELD 80  = ADDPROP(/root/pri/muldata/head/colname[11], Name, THDD)
+631 FIELD 81  = ADDPROP(/root/pri/muldata/head/colname[11], Chinese,提货地点)
+632 FIELD 82  = ADDPROP(/root/pri/muldata/head/colname[11], Type, String)
+633 FIELD 83  = ADDPROP(/root/pri/muldata/head/colname[12], Name, JGPZDM)
+634 FIELD 84  = ADDPROP(/root/pri/muldata/head/colname[12], Chinese,交割品种代码)
+635 FIELD 85  = ADDPROP(/root/pri/muldata/head/colname[12], Type, String)
+636 FIELD 86  = ADDPROP(/root/pri/muldata/head/colname[13], Name, JGPZMC)
+637 FIELD 87  = ADDPROP(/root/pri/muldata/head/colname[13], Chinese,交割品种名称)
+638 FIELD 88  = ADDPROP(/root/pri/muldata/head/colname[13], Type, String)
+639 FIELD 89  = ADDPROP(/root/pri/muldata/head/colname[14], Name, THZL)
+640 FIELD 90  = ADDPROP(/root/pri/muldata/head/colname[14], Chinese,提货重量)
+641 FIELD 91  = ADDPROP(/root/pri/muldata/head/colname[14], Type, String)
+642 FIELD 92  = ADDPROP(/root/pri/muldata/head/colname[15], Name, THRXM)
+643 FIELD 93  = ADDPROP(/root/pri/muldata/head/colname[15], Chinese,提货人姓名)
+644 FIELD 94  = ADDPROP(/root/pri/muldata/head/colname[15], Type, String)
+645 FIELD 95  = ADDPROP(/root/pri/muldata/head/colname[16], Name, THRZJLX)
+646 FIELD 96  = ADDPROP(/root/pri/muldata/head/colname[16], Chinese,提货人证件类型)
+647 FIELD 97  = ADDPROP(/root/pri/muldata/head/colname[16], Type, String)
+648 FIELD 98  = ADDPROP(/root/pri/muldata/head/colname[17], Name, THRZJHM)
+649 FIELD 99  = ADDPROP(/root/pri/muldata/head/colname[17], Chinese,提货人证件号码)
+650 FIELD 100  = ADDPROP(/root/pri/muldata/head/colname[17], Type, String)
+651 FIELD 101  = ADDPROP(/root/pri/muldata/head/colname[18], Name, THCK)
+652 FIELD 102  = ADDPROP(/root/pri/muldata/head/colname[18], Chinese,提货仓库)
+653 FIELD 103  = ADDPROP(/root/pri/muldata/head/colname[18], Type, String)
+654 FIELD 104  = ADDPROP(/root/pri/muldata/head/colname[19], Name, ZDSLWD)
+655 FIELD 105  = ADDPROP(/root/pri/muldata/head/colname[19], Chinese,指定受理网点)
+656 FIELD 106  = ADDPROP(/root/pri/muldata/head/colname[19], Type, String)
+657 FIELD 107  = ADDPROP(/root/pri/muldata/head/colname[20], Name, LXR)
+658 FIELD 108  = ADDPROP(/root/pri/muldata/head/colname[20], Chinese,联系人)
+659 FIELD 109  = ADDPROP(/root/pri/muldata/head/colname[20], Type, String)
+660 FIELD 110  = ADDPROP(/root/pri/muldata/head/colname[21], Name, LXDH)
+661 FIELD 111  = ADDPROP(/root/pri/muldata/head/colname[21], Chinese,联系电话)
+662 FIELD 112  = ADDPROP(/root/pri/muldata/head/colname[21], Type, String)
+663 FIELD 113  = ADDPROP(/root/pri/muldata/head/colname[22], Name, THMS)
+664 FIELD 114  = ADDPROP(/root/pri/muldata/head/colname[22], Chinese,提货模式)
+665 FIELD 115  = ADDPROP(/root/pri/muldata/head/colname[22], Type, String)
+666 FIELD 116  = ADDPROP(/root/pri/muldata/head/colname[23], Name, JYQD)
+667 FIELD 117  = ADDPROP(/root/pri/muldata/head/colname[23], Chinese,交易渠道)
+668 FIELD 118  = ADDPROP(/root/pri/muldata/head/colname[23], Type, String)
+ 
+#构建列名显示
+950 VAR MULHEAD1 =BDTHLSH|ZHKH|KHMC|THDH|SQRQ|THKSRQ|THJSRQ|YHTHR|CLXX|THZT|
+955 VAR MULHEAD2 =THDD|JGPZDM|JGPZMC|THZL|THRXM|THRZJLX|THRZJHM|THCK|ZDSLWD|LXR|LXDH|THMS|JYQD|
+#构建行值显示
+#958 VAR DATA = SAD(VAR(MULHEAD),FML(muldata))
+960 FIELD 96 = ADDNODE(/root/pri/muldata, data ,SAD(VAR(MULHEAD1),VAR(MULHEAD2),FML(muldata)))
+ 
+990 DO XMLDUMP()
+1000 DO XMLFREE()
+
+
+

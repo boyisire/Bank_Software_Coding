@@ -1,0 +1,5 @@
+ROUTEDESC=对公系统管理类
+[ROUTE]
+10 SET direction=1  # 路由方向，1代表是后台主动发起的交易
+20 CALL 97 WITH REVMODE 1
+30 SEND 71 WITH END

@@ -1,0 +1,3 @@
+ROUTEDESC=个人网银前置文件通知
+[ROUTE]
+140 SEND 260 WITH END

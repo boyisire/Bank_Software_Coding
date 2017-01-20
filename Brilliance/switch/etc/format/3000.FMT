@@ -1,0 +1,47 @@
+FMTDESC=电子渠道请求客户信息-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+20 SET trancode = GETVALUE(/root/pub/trancode)
+
+21 SET CXFS = GETVALUE(/root/pri/CXFS)
+#证件类型       ZJLX
+22 SET ZJLX = GETVALUE(/root/pri/ZJLX)
+#证件号码       ZJHM
+23 SET ZJHM = GETVALUE(/root/pri/ZJHM)
+#手机号码       SJHM
+24 SET SJHM = GETVALUE(/root/pri/SJHM)
+#账号卡号       ZHKH
+25 SET ZHKH = GETVALUE(/root/pri/ZHKH)
+#渠道登录别名   QDDLBM
+26 SET QDDLBM = GETVALUE(/root/pri/QDDLBM)
+
+27 SET PCODE = GETVALUE(/root/pub/trancode)
+
+30 SET QDLX = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/tranchannel))),0),GETVALUE(/root/pri/CZDZQDBS),GETVALUE(/root/pri/tranchannel))
+
+#50 SWITCH GETVALUE(/root/pri/CXFS)
+50 SWITCH 2
+51 CASE 1
+52 SET VALUE    = MOD(HASH(SAD(GETVALUE(/root/pri/ZJLX),GETVALUE(/root/pri/ZJHM))),1024)
+53 BREAK
+
+54 CASE 2
+55 SET VALUE    = MOD(HASH(GETVALUE(/root/pri/SJHM)),1024)
+56 BREAK
+
+57 CASE 3
+58 SET VALUE    = MOD(HASH(GETVALUE(/root/pri/ZHKH)),1024)
+59 BREAK
+
+60 CASE 4
+61 SET VALUE    = MOD(HASH(SAD(GETVALUE(/root/pri/tranchannel),GETVALUE(/root/pri/QDDLBM))),1024)
+62 BREAK
+
+70 ENDSWITCH
+      
+
+1000 DO XMLFREE()

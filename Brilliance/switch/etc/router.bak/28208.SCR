@@ -1,0 +1,10 @@
+ROUTEDESC=柜台-外币校验
+[ROUTE]
+#如果请求解包后就发现有错误,不继续交易的,置错误标志为1
+10 IF NOT(SEQ(FML(ROUTEFLAG),00000000)) THEN GOTO 200
+
+#外币系统
+100 CALL 85
+
+
+200 SEND 282 WITH END

@@ -1,0 +1,18 @@
+FMTDESC=根据证件信息查询客户号-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+20 SET trancode = GETVALUE(/root/pub/trancode)
+25 SET QDLX = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/tranchannel))),0),GETVALUE(/root/pri/CZDZQDBS),GETVALUE(/root/pri/tranchannel))
+
+30 SET CXFS = 1
+40 SET ZJLX = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/ZJLX))),0),GETVALUE(/root/pri/IDTYPE),GETVALUE(/root/pri/ZJLX))
+41 VAR ZJLX = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/ZJLX))),0),GETVALUE(/root/pri/IDTYPE),GETVALUE(/root/pri/ZJLX))
+50 SET ZJHM = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/ZJHM))),0),GETVALUE(/root/pri/IDNO),GETVALUE(/root/pri/ZJHM))
+51 VAR ZJHM = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/ZJHM))),0),GETVALUE(/root/pri/IDNO),GETVALUE(/root/pri/ZJHM))
+60 SET PCODE = GETVALUE(/root/pub/trancode)
+70 SET VALUE = MOD(HASH(SAD(VAR(ZJLX),VAR(ZJHM))),1024)
+1000 DO XMLFREE()

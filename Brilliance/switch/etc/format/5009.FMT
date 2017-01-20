@@ -1,0 +1,28 @@
+FMTDESC=电子银行-索引库变更附加账号-应答
+TRANTYPE=104
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+# 电子银行-索引库变更附加账号 应答
+10 FIELD 1 = ADDNODE( /root, pub, SPACE(0))
+20 FIELD 2 = ADDNODE( /root, pri, SPACE(0))
+# 增加结点:pub
+
+40 FIELD 4 = ADDNODE( /root/pub,trancode,FML(trancode))
+50 FIELD 4 = ADDNODE( /root/pub,trandate,FML(trandate))
+60 FIELD 4 = ADDNODE( /root/pub,trantime,FML(trantime))
+60 FIELD 4 = ADDNODE( /root/pub,retcode,FML(retcode))
+60 FIELD 4 = ADDNODE( /root/pub,errmsg,FML(errmsg))
+
+200 FIELD 20 = ADDNODE( /root/pri,CUSID,FML(CUSID)) # 证件类型
+210 FIELD 21 = ADDNODE( /root/pri,TRANCODE ,FML(TRANCODE)) # 证件类型
+220 FIELD 22 = ADDNODE( /root/pri,TRANID,FML(TRANID)) # 证件号码
+230 FIELD 23 = ADDNODE( /root/pri,FJZHFLAG,FML(FJZHFLAG)) # 手机号码 
+240 FIELD 24 = ADDNODE( /root/pri,YTRANDATE,FML(YTRANDATE)) # 渠道别名 
+
+                                           
+
+990 DO XMLDUMP()
+1000 DO XMLFREE()

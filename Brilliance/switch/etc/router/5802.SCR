@@ -1,0 +1,4 @@
+ROUTEDESC=网银基金理财国债支付通后台主动发起交易
+[ROUTE]
+10 SET direction=1  # 路由方向，1代表是后台主动发起的交易
+20 SEND 69 WITH END

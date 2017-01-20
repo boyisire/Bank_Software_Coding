@@ -1,0 +1,550 @@
+/****************************************************************/
+/* 模块编号    ：REPORT                                         */
+/* 模块名称    ：报表管理                                       */
+/* 版 本 号    ：V4.3.0                                         */
+/* 作    者    ：顾晓忠                                         */
+/* 建立日期    ：2002/04/30                                     */
+/* 最后修改日期：                                               */
+/* 模块用途    ：根据交易流水表产生需要输出的报表内容           */
+/* 本模块中包含如下函数及功能说明：                             */
+/****************************************************************/
+
+#include "switch.h"
+EXEC SQL INCLUDE sqlca;
+
+extern int _swExpN2T(char *aNstr,char *aTstr);
+time_t AscLongTime(char *);
+int InputMsg(char *alBuf);
+int JudgeSqlKey(char *alBuff);
+int swGetReportWiza(char *alBuf1,char *alBuf2,int *ilKey,char psFld[iBUFFLDNUM][50],int *ilNum);
+int swGetReportInput(int argc,char **argv,char *alBuf1,char *alBuf2,int *ilKey,char psFld[iBUFFLDNUM][50],int *ilNum);
+
+int main(int argc,char **argv)
+{
+  int    i;
+  short  ilRc;
+  struct msgpack slMsgpack;
+  char   alMsgkey[100],alSqlkey[100];
+  int    ilPackkey = 0;
+  char   alPackbuffer[iMSGMAXLEN];
+  long   llPackoffset;
+  unsigned int ilPacklen;
+  char   alPackfile[10+1];
+  char   alResult[iFLDVALUELEN + 1];
+  short  ilResultlen;
+  char   alViewFld[iBUFFLDNUM][50];
+  char   alBuf[512];
+  char   alViewBuf[512];
+  char   alFormat[20];
+  int    ilViewNum = 0;
+  char   alTmpexp[1024];
+
+  EXEC SQL BEGIN DECLARE SECTION;
+    struct HIS_TRAN_LOG{
+      long   tran_id;
+      long   tran_begin;
+      short  tran_status;
+      char   resq_file[10+1];
+      long   resq_offset;
+      short  resq_len;
+      char   resp_file[10+1];
+      long   resp_offset;
+      short  resp_len;
+    }slTranlog;
+    char  alSqltext[200];
+  EXEC SQL END DECLARE SECTION;
+
+  strcpy(agDebugfile,"swReport.debug");
+  /* 取得DEBUG标志 */
+  if ((cgDebug = _swDebugflag("swReport"))==FAIL)
+  {
+    fprintf(stderr,"取得DEBUG标志出错!");
+    exit(FAIL);
+  }
+  if ( argc == 1 ){
+    ilRc = swGetReportWiza(alSqlkey,alMsgkey,&ilPackkey,alViewFld,&ilViewNum);
+    if ( ilRc )
+      exit(FAIL);
+  }
+  else if( (argc == 2) &&
+    ((memcmp(argv[1],"-h",2) == 0) 
+    || (memcmp(argv[1],"/?",2) == 0)) ){
+    printf("== 命令帮助 ==\n");
+    printf("向导命令格式:  swReport\n");
+    printf("全部命令格式:  swReport [-d|-m] -s -l\n");
+    printf("帮助命令格式:  swReport [-h|/?]\n");
+    exit(0);
+  }
+  else{
+    ilRc = swGetReportInput(argc,argv,alSqlkey,alMsgkey,&ilPackkey,alViewFld,&ilViewNum);
+    if ( ilRc )
+      exit(FAIL);
+  }
+
+  if (JudgeSqlKey(alSqlkey))
+     exit(FAIL);
+  if ( (ilPackkey !=0)&&(ilPackkey !=1) ){
+     printf("此值只能为0或1\n");
+     exit(FAIL);
+  }
+   
+  swVdebug(3,"alSqlkey = [%s]",alSqlkey);
+  swVdebug(3,"alMsgkey = [%s]",alMsgkey);
+  swVdebug(3,"ilPackkey = [%d]",ilPackkey);
+  swVdebug(3,"ilViewNum = [%d]",ilViewNum);
+  for (i=0;i<ilViewNum;i++)
+    swVdebug(3,"Fld = [%s]",alViewFld[i]);
+
+  /* 打开数据库 */
+  ilRc = swDbopen();
+  if ( ilRc ){
+    swVdebug(0,"S0010: 打开数据库出错");
+    exit(FAIL);
+  } 
+
+  /* 解析SQL条件 */
+  memset(alSqltext,0x00,sizeof(alSqltext));
+  if (strlen(alSqlkey))
+    sprintf(alSqltext,"select tran_id,tran_begin,tran_status,resq_file,resq_offset,resq_len,resp_file,resp_offset,resp_len from swt_his_tran_log where %s",alSqlkey);
+  else
+    strcpy(alSqltext,"select tran_id,tran_begin,tran_status,resq_file,resq_offset,resq_len,resp_file,resp_offset,resp_len from swt_his_tran_log");
+ 
+  /* 定义动态游标 */
+  EXEC SQL PREPARE dosql FROM :alSqltext;
+  if ( sqlca.sqlcode ){
+    swVdebug(0,"S0020: PREPARE 语句出错,sqlcode=%d",sqlca.sqlcode);
+    swDbclose();
+    exit(FAIL);
+  }
+
+  EXEC SQL DECLARE cur1 CURSOR FOR dosql;
+  if ( sqlca.sqlcode ){
+    swVdebug(0,"S0030: 定义游标错误[%d]",sqlca.sqlcode);
+    swDbclose();
+    exit(FAIL);
+  }
+    
+  /* 打开游标 */
+  EXEC SQL OPEN cur1;
+  if ( sqlca.sqlcode ){
+    swVdebug(0,"S0040: 打开游标错误[%d]",sqlca.sqlcode);
+    swDbclose();
+    exit(FAIL);
+  }
+  
+  memset(&slTranlog,0x00,sizeof(struct HIS_TRAN_LOG));
+
+  while(TRUE){
+    EXEC SQL FETCH cur1 INTO :slTranlog;
+    if ( sqlca.sqlcode < 0 ){
+      swVdebug(0,"S0050: 读取游标出错[%d]",sqlca.sqlcode);
+      swDbclose();
+      exit(FAIL);
+    }
+    if ( sqlca.sqlcode == SQLNOTFOUND )
+      break;
+ 
+    if ( ilPackkey == 0 ){
+      strcpy(alPackfile,slTranlog.resq_file);
+      llPackoffset = slTranlog.resq_offset;
+      ilPacklen = slTranlog.resq_len;
+    }
+    else{
+      strcpy(alPackfile,slTranlog.resp_file);
+      llPackoffset = slTranlog.resp_offset;
+      ilPacklen = slTranlog.resp_len;
+    }
+    ilRc = swGetlog(alPackfile,ilPacklen,llPackoffset,alPackbuffer);
+    if (ilRc == FAIL){
+      swVdebug(0,"S0060: swGetlog()函数取报文出错,tranid=%d",slTranlog.tran_id);
+      continue;
+    }
+    slMsgpack = *((struct msgpack *)alPackbuffer);
+
+    ilRc = swFmlunpack(slMsgpack.aMsgbody,slMsgpack.sMsghead.iBodylen,psgPreunpackbuf);
+    if( ilRc == FAIL ){
+      swVdebug(0,"S0070: FML报文解包出错,tranid=%d",slTranlog.tran_id);
+      continue;
+    }
+    
+    psgMsghead = &(slMsgpack.sMsghead);
+
+    /* 计算条件表达式 */
+    if ( strlen(alMsgkey) ){
+      ilRc=_swExpN2T(alMsgkey,alTmpexp);
+      if( ilRc ) 
+         continue;
+
+      ilRc = _swExpress(alTmpexp,alResult,&ilResultlen);
+      if(ilRc == FAIL){
+        swVdebug(0,"S0080: 计算表达式出错[%s],返回码=%d",alMsgkey,ilRc);
+        continue;
+      }
+      if( alResult[0] == '0' )
+        continue;
+    }
+    /* 显示需打印的内容 */
+    /* 计算显示表达式 */
+    alBuf[0] = 0x00;
+    for ( i=0; i<ilViewNum; i++ ){
+      alResult[0] = 0x00;
+      alTmpexp[0] = 0x00;
+      ilRc=_swExpN2T(alViewFld[i],alTmpexp);
+      if( ilRc ) 
+         break;
+      ilRc = _swExpress(alTmpexp,alResult,&ilResultlen);
+      if(ilRc == FAIL){
+        swVdebug(0,"S0090: 计算表达式出错[%s],返回码=%d",alViewFld,ilRc);
+        break;
+      }
+      sprintf(alFormat,"%%%ds\t",ilResultlen);
+      sprintf(alViewBuf,alFormat,alResult);
+      strcat(alBuf,alViewBuf);
+    }
+    if( i < ilViewNum )
+      break;
+    printf("%s\n",alBuf);
+  }
+  return(0);
+}
+
+/********************************************/
+/*函数名称: swGetReportWiza                 */
+/*函数功能: 向导命令输入生成要素            */
+/********************************************/
+int swGetReportWiza(char *alBuf1,char *alBuf2,int *ilKey,char psFld[iBUFFLDNUM][50],int *ilNum)
+{
+  char  alVaildkey[20];
+  char  alBuf3[20];
+
+  printf("\n==示例==\n");
+  printf("形式一: tran_id >= ID1 and tran_id <= ID2\n");
+  printf("形式二: tran_begin > $YYYYMMDD-hhmmss and tran_begin < $YYYYMMDD-hhmmss\n");
+  printf("形式三: tran_begin > T1 and tran_begin < T2\n");
+
+  while(TRUE){
+    alBuf1[0] = 0x00;
+    printf("\n输入SQL条件表达式:");
+    if ( InputMsg(alBuf1) == 0 )
+      break;
+    alVaildkey[0] =0x00;
+    printf("\n输入正确吗(Y/N)");
+    InputMsg(alVaildkey);
+    if ( (alVaildkey[0] == 'Y')||(alVaildkey[0] == 'y') )
+      break;
+  }
+
+  printf("\n==示例==\n");
+  printf("读取报文记录条件: SEQ(FML(name0),12345)\n");
+  while(TRUE){
+    alBuf2[0] = 0x00;
+    printf("\n输入报文条件表达式:");
+    if ( InputMsg(alBuf2) == 0 )
+      break;
+    alVaildkey[0] =0x00;
+    printf("\n输入正确吗(Y/N)");
+    InputMsg(alVaildkey);
+    if ( (alVaildkey[0] == 'Y')||(alVaildkey[0] == 'y') )
+      break;
+  }
+
+  printf("\n==提示==\n");
+  printf("读报文类型   0:读请求报文(默认类型)  1:读响应报文\n");
+  while(TRUE){
+    printf("\n根据请求|响应条件:");
+    memset(alBuf3,0x00,sizeof(alBuf3));
+    if ( InputMsg(alBuf3) == 0 ){
+      *ilKey = 0;
+      break;
+    }
+    alVaildkey[0] =0x00;
+    printf("\n输入正确吗(Y/N)");
+    InputMsg(alVaildkey);
+    if ( (alVaildkey[0] == 'Y')||(alVaildkey[0] == 'y') ){
+      *ilKey = atoi(alBuf3);
+      break;
+    }
+  }
+
+  printf("\n==示例==\n");
+  printf("输入显示域表达式: FILL(FML(name0),SPACE(1),19,R)\n");
+  *ilNum = 0;
+  while(TRUE){
+    printf("\n==输入显示域表达式");
+    while(TRUE){
+      printf("\n第[%d]域:",*ilNum+1);
+      psFld[*ilNum][0] = 0x00;
+      InputMsg(psFld[*ilNum]);
+      alVaildkey[0] =0x00;
+      printf("\n输入正确吗(Y/N)");
+      InputMsg(alVaildkey);
+      if ( (alVaildkey[0] == 'Y')||(alVaildkey[0] == 'y') ){
+        (*ilNum)++;
+        break;
+      }
+    }
+    alVaildkey[0] =0x00;
+    printf("\n输入下一个域吗(Y/N)");
+    InputMsg(alVaildkey);
+    if ( (alVaildkey[0] == 'n')||(alVaildkey[0] == 'N') )
+      break;
+  }
+  return(0);
+} 
+
+/********************************************/
+/*函数名称: swGetReportInput                */
+/*函数功能: 命令输入生成要素                */
+/********************************************/
+int swGetReportInput(int argc,char **argv,char *alBuf1,char *alBuf2,int *ilKey,char psFld[iBUFFLDNUM][50],int *ilNum)
+{
+  int  c;
+  int  ilOptflag = 0;
+  int  i,j,k;
+
+  alBuf1[0] = 0x00;
+  alBuf2[0] = 0x00;
+  *ilKey = 0;
+  /* d -- data KEY
+     m -- message KEY
+     s -- source
+     l -- list */
+  while( (c = getopt(argc,argv,"d:m:s:l:")) != -1 ){
+    switch(c){
+      case 'd':
+        strcpy(alBuf1,optarg);
+        break;
+      case 'm':
+        strcpy(alBuf2,optarg);
+        break;
+      case 's':
+        *ilKey = atoi(optarg);
+        break;
+      case 'l':
+        if ( strlen(optarg) == 0 ){
+          printf("必须输入显示域\n");
+          return(FAIL);
+        }
+        j = 0;
+        k = 0;
+        for (i=0;i<strlen(optarg);i++){
+          if ( optarg[i] != '|' ){
+            psFld[j][k] = optarg[i];
+            k++;
+          }
+          else{
+            psFld[j][k+1] = 0x00;
+            j++;
+            k = 0;
+          }
+        }
+        psFld[j][k+1] = 0x00;
+        *ilNum = j + 1;
+        ilOptflag = 1; 
+        break;
+      default: 
+        printf("== 命令帮助 ==\n");
+        printf("向导命令格式:  swReport\n");
+        printf("全部命令格式:  swReport [-d|-m] -s -l\n");
+        printf("帮助命令格式:  swReport [-h|/?]\n");
+        return(FAIL); 
+    }
+  }
+  if ( ilOptflag != 1 ){
+    printf("Usage:swReport [-d|-m] -s -l [表达式|表达式]\n");
+    return(FAIL); 
+  }
+  return(0);
+}
+
+/********************************************/
+/*函数名称: JudgeSqlKey                     */
+/*函数功能: 判断并解析数据库条件            */
+/********************************************/
+int JudgeSqlKey(char *alBuff)
+{
+  char  *alTmp;
+  int   i,j,k;
+  char  alTime1[20],alTime2[20];
+  long  lTime1,lTime2;
+  int   ilLen1 = 0,ilLen2 = 0;
+  char  alBufTmp1[100];
+  char  alBufTmp2[100];
+  char  alBufTmp[100];
+
+  memset(alTime1,0x00,sizeof(alTime1)); 
+  memset(alTime2,0x00,sizeof(alTime2)); 
+  memset(alBufTmp,0x00,sizeof(alBufTmp));
+  memset(alBufTmp1,0x00,sizeof(alBufTmp1));
+  memset(alBufTmp2,0x00,sizeof(alBufTmp2));
+
+  if ( strlen(alBuff) == 0 )
+    return(0);
+
+  if ( (strstr(alBuff,"tran_id") == NULL)&& \
+     (strstr(alBuff,"tran_begin") == NULL) ){
+    printf("SQLKEY条件输入错误\n");
+    return(FAIL);
+  }
+  if ( strstr(alBuff,"tran_begin") != NULL ){
+    alTmp = strchr(alBuff,'$');
+    if ( alTmp != NULL ){
+      for(i=0;;i++){
+        if ( (alTmp[i+1] != ' ')&&(alTmp[i+1] != '\0') )
+          break;
+        ilLen1++;
+      }
+      for (k=0;;k++,i++){
+        if ( (alTmp[i+1] == ' ')||(alTmp[i+1] == '\0') )
+          break;
+        ilLen1++;
+        if ( (alTmp[i+1] >= '0')&&(alTmp[i+1] <='9') )
+          alTime1[k] = alTmp[i+1]; 
+        else
+          k--;
+      } 
+      lTime1 = AscLongTime(alTime1);
+      if( lTime1 == FAIL)
+      {
+        printf("输入时间参数1不合法in SQLKEY!\nUsage: yyyymmddhhmmss\n");
+        return(FAIL);
+      }
+      sprintf(alBufTmp1,"%ld",lTime1);
+      strcpy(alBufTmp,alTmp+1);
+      alTmp = strchr(alBufTmp,'$');
+      if ( alTmp != NULL ){
+        for(i=0;;i++){
+          if ( (alTmp[i+1] != ' ')&&(alTmp[i+1] != '\0') )
+            break;
+          ilLen2++;
+        }
+        for (k=0;;k++,i++){
+          if ( (alTmp[i+1] == ' ')||(alTmp[i+1] == '\0') )
+            break;
+          ilLen2++;
+          if ( (alTmp[i+1] >= '0')&&(alTmp[i+1] <='9') )
+            alTime2[k] = alTmp[i+1]; 
+          else
+            k--;
+        }
+        lTime2 = AscLongTime(alTime2);
+        if( lTime2 == FAIL)
+        {
+          printf("输入时间参数2不合法in SQLKEY!\nUsage: yyyymmddhhmmss\n");
+          return(FAIL);
+        }
+        sprintf(alBufTmp2,"%ld",lTime2);
+      } 
+
+      memcpy(alBufTmp,alBuff,strlen(alBuff));
+      alBufTmp[strlen(alBuff)] = 0x00;
+    
+      memset(alBuff,0x00,strlen(alBuff)); 
+      for (i=0;i<strlen(alBufTmp);i++){
+        if (alBufTmp[i] == '$' )
+          break;
+        else
+          alBuff[i] = alBufTmp[i];
+      }
+      j = i;
+      for (k=0;k<strlen(alBufTmp1);k++,i++)
+        alBuff[i] = alBufTmp1[k];
+      for (k=j+ilLen1+1;k<strlen(alBufTmp);k++,i++){
+        if ( alBufTmp[k] == '$' )
+          break;
+        else
+          alBuff[i] = alBufTmp[k];
+      }
+      j = k;
+      for (k=0;k<strlen(alBufTmp2);k++,i++)
+        alBuff[i] = alBufTmp2[k];
+      for (k=j+ilLen1+1;k<strlen(alBufTmp);k++){
+        if ( alBufTmp[k] == '$' )
+          break;
+        else
+          alBuff[i] = alBufTmp[k];
+      }
+    }
+  }
+  return(0);
+}
+
+time_t AscLongTime(char *lTime)
+{
+  struct tm slTimes;
+  char str[3];
+  time_t t1;
+
+  sprintf(str,"%4.4s",lTime);
+  slTimes.tm_year=atoi(str)-1900;
+
+  if(slTimes.tm_year < 0 || slTimes.tm_year > 200)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+4);
+  slTimes.tm_mon=atoi(str);
+  if(slTimes.tm_mon < 1 || slTimes.tm_mon > 12)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+6);
+  slTimes.tm_mday=atoi(str);
+  if( slTimes.tm_mon == 1 || slTimes.tm_mon == 3 ||  slTimes.tm_mon == 5 ||
+      slTimes.tm_mon == 7 || slTimes.tm_mon == 8 || slTimes.tm_mon == 10 ||
+      slTimes.tm_mon == 12 )
+  {
+     if(slTimes.tm_mday < 1 || slTimes.tm_mday > 31)
+        return(FAIL);
+  }
+  else if( slTimes.tm_mon == 4 || slTimes.tm_mon == 6 || slTimes.tm_mon == 5
+    || slTimes.tm_mon == 9 || slTimes.tm_mon == 11 )
+  {
+     if(slTimes.tm_mday < 1 || slTimes.tm_mday > 30)
+        return(FAIL);
+  }
+  else
+  {
+     if(slTimes.tm_mday < 1 || slTimes.tm_mday > 29)
+        return(FAIL);
+  }
+
+  slTimes.tm_mon=slTimes.tm_mon - 1;
+
+  sprintf(str,"%2.2s",lTime+8);
+  slTimes.tm_hour=atoi(str);
+  if(slTimes.tm_hour < 0 || slTimes.tm_hour > 23)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+10);
+  slTimes.tm_min=atoi(str);
+  if(slTimes.tm_min < 0 || slTimes.tm_min > 59)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+12);
+  slTimes.tm_sec=atoi(str);
+  if(slTimes.tm_sec < 0 || slTimes.tm_sec > 59)
+    return(FAIL);
+
+  slTimes.tm_wday=0;
+  slTimes.tm_yday=0;
+  slTimes.tm_isdst=0;
+
+  t1 = mktime(&slTimes);
+  swVdebug(4,"S0100: [函数返回] AscLongTime(),返回码=0");
+  return(t1);
+}
+
+int InputMsg(char *alBuf)
+{
+  int i,c=0;
+
+  fflush(stdin); 
+  for(i=0;;i++){
+    c = getchar();
+    if ( c == 10 )
+      break;
+    alBuf[i] = c;
+  }
+  alBuf[i] = 0x00;
+  return(i);
+}
+ 

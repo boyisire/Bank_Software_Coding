@@ -1,0 +1,19 @@
+
+rm -f .swmake.tmp
+
+if [ ! -s $2 ] ; then
+
+	ftp -n $SWMAKEIP<<!
+	user $1 $SWMAKEPWD
+	asci
+	get $2
+	quit
+!
+
+	if [ -s $2 ] ; then
+		> .swmake.tmp
+	else
+		exit 1
+	fi
+fi
+

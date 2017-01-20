@@ -1,0 +1,8 @@
+ROUTEDESC=网银至ECIF（客户信息平台）电子渠道签约信息准实时同步
+[ROUTE]
+#发送至ECIF客户信息平台
+10 CALL 122 WITH REVMODE 1	
+
+#给网银
+#100 SEND 24 WITH END
+100 SEND MSGHEAD(iBegin_q_id) WITH END

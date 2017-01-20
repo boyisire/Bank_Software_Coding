@@ -1,0 +1,96 @@
+#include "swlog.h"
+#include "swapi.h"
+#include "swConstant.h"
+#include "swGlobal.h"
+#include <stdio.h>
+#include <openssl/md5.h>
+EXEC SQL include sqlca;
+extern int _swExpress(char *aExpress, char *aResult, short *piResultlen);
+extern int _swExpN2T(char *aNstr,char *aTstr);
+
+char cgDebug;
+
+int main(int argc,char **argv)
+{
+  char buf[1024];
+  char buf1[1024],alTmpexp[2*iFLDVALUELEN+1];
+  short ilStrlen;
+  int ilRtncode;
+  
+  struct msgpack slMsgpack;
+  memset ((char*)&slMsgpack, 0, sizeof (struct msgpack));
+  
+  cgDebug = 4;
+  memset(agDebugfile,0x00,sizeof(agDebugfile));
+  strcpy(agDebugfile,"swFunctest.debug");
+
+	psgMsghead = &(slMsgpack.sMsghead);
+	
+	
+	/* 连接数据库 */
+	ilRtncode = swDbopen();
+	if (ilRtncode) {
+		printf("连接数据库失败，继续执行!\n");		
+		swVdebug(0,"连接数据库失败，继续执行!");		    
+	}
+REDO:	
+  printf("***平台函数测试工具*** (quit/q 退出) \n");
+  printf("请输入平台表达式: ");
+  if (fgets(buf,sizeof(buf),stdin) == NULL) 
+  {
+    printf("输入错误!\n");
+    swDbclose();
+    exit(0);
+  }
+
+	if ((strncmp(buf,"q",1)==0)||(strncmp(buf,"quit",4)==0)){
+    printf("退出!\n");
+    swDbclose();
+    exit(0);		
+	}
+	
+  swDebughex(buf,strlen(buf));
+  memset(buf1,0x00,1024);
+  
+  /* ilRtncode = _swExpress(buf,buf1,&ilStrlen); */
+  /* delete   by wangpan 2001/11/29              */
+  /* modified by wangpan 2001/11/29              */
+  memset(alTmpexp,0x00,sizeof(alTmpexp));
+  ilRtncode=_swExpN2T(buf,alTmpexp);
+swVdebug(0,"_swExpN2T=[%d]" ,ilRtncode);
+  if(ilRtncode!=0)  return(ilRtncode);
+  ilRtncode=_swExpress(alTmpexp,buf1,&ilStrlen);
+swVdebug(0,"_swExpress=[%d]" ,ilRtncode);  
+  /* end modify by wangpan 2001/11/29            */
+  
+
+  printf("平台表达式结果串   = [%s]\n",buf1);
+  printf("平台表达式结果长度 = [%d]\n",ilStrlen);
+  printf("平台表达式结果二进制表述请参见[swFunctest.debug]文件!\n");
+  swDebughex(buf,strlen(buf));
+  swDebughex(buf1,ilStrlen);
+  if (argc == 2)
+  {
+    long llBegin_time,llEnd_time;
+    long i;
+    
+    /* add by wangpan 2001/11/29           */
+    memset(buf1,0x00,1024);
+    memset(alTmpexp,0x00,sizeof(alTmpexp));
+    ilRtncode = _swExpN2T(buf,alTmpexp);
+    if(ilRtncode!=0) return(ilRtncode);
+    /* end add by wangpan 2001/11/29       */
+
+    time(&llBegin_time);
+    for(i=1;i<=atol(argv[1]);i++)
+    {
+      ilRtncode = _swExpress(alTmpexp,buf1,&ilStrlen);
+    }
+    time(&llEnd_time);
+    printf("耗时 = [%ld]秒\n",llEnd_time - llBegin_time);
+  }
+	goto REDO;
+  swDbclose();
+  exit(0);
+}
+

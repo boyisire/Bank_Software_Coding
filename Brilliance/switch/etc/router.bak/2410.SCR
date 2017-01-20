@@ -1,0 +1,40 @@
+ROUTEDESC=网银柜台-柜台签约加办
+[ROUTE]
+#如果请求解包后就发现有错误,不继续交易的,置错误标志为1
+10 IF NOT(SEQ(FML(PTERRFLAG),0)) THEN GOTO 450
+#如果没有电话银行的加办操作,直接跳至 100
+20 IF SEQ(FML(TELOPENFLAG),0) THEN GOTO 100
+#判断是否已经发过加办交易,如果已经发过的,跳过加办操作步骤
+30 IF SEQ(FML(NEWACCFLAG),0) THEN GOTO 100
+#如果不是储蓄账户 ROUFLAG!=1,直接跳至 100
+40 IF NOT(SEQ(FML(ROUFLAG),1)) THEN GOTO 100
+
+#往统版系统发加办操作, PTMB 有柜台程序中置入FML
+50 CALL FML(PTMB) WITH REVMODE 1
+#如果电话银行加办失败了,应直接返回柜台
+60 IF NOT(SEQ(FML(CTREV),00)) THEN GOTO 400
+65 SET RESPCODE=FML(CTREV)
+
+
+#只加办了电话银行,未加办网银,且加办电话银行成功
+100 IF SEQ(FML(WBOPENFLAG),0) THEN GOTO 500
+#加办网银交易,转发网银前端
+110 CALL 76 WITH REVMODE 1
+#加办网银成功,返回柜台
+120 IF SEQ(FML(RESPCODE),00) THEN GOTO 500
+#网银前端处理失败,置错误标志为3
+200 SET ERRSTEP=3	
+#失败返回,调用公共错误格式转换组
+210 SEND 133 WITH END
+#电话银行加办失败,错误标志阶段标志置为2
+400 SET ERRSTEP=2
+405 SET RESPCODE=K1
+#失败返回,调用公共错误格式转换组
+410 SEND 133 WITH END
+#柜台解包程序校验数据就发生失败的,置错误标志为1
+450 SET ERRSTEP=1
+#失败返回,调用公共错误格式转换组
+460 SEND 133 WITH END
+#整个过程没有任何错误,ERRSTEP 置为 0
+500 SET ERRSTEP=0
+510 SEND 133 WITH END

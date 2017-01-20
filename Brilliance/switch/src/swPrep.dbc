@@ -1,0 +1,2116 @@
+/****************************************************************/
+/* 模块编号    ：swPrep                                         */ 
+/* 模块名称    ：通用前置进程                                   */
+/* 作	 者    ：                                               */
+/* 建立日期    ：2001/07/19                                     */
+/* 最后修改日期：2001/07/19                                     */
+/* 模块用途    ：前置进程                                       */
+/* 本模块中包含如下函数：                                       */
+/*			  (1) void main();                      */
+/*                        (2) int swLoadcfg(char *)             */
+/*                        (3) int swExecscript(int)             */
+/*                        (4) void swQuit(int);                 */
+/****************************************************************/
+
+/****************************************************************/
+/* 修改记录：                                                   */
+/*  2001/07/19 创建                                             */
+/****************************************************************/
+
+/* 头文件定义 */
+#ifdef TUXEDO_APP
+#include "atmi.h"
+#endif
+#include <errno.h>
+#include "swapi.h"
+#include "swConstant.h"
+#include "swPubfun.h"
+
+/* 通用前置脚本结构定义 */
+struct swt_sys_route
+{
+  short route_grp;
+  short route_id;
+  char  route_cond[101];
+  char  q_target[101];
+  short next_id;
+  char  oper_flag[2];
+  char  saf_flag[2];
+  char  end_flag[2];
+  short fmt_group;
+  short rev_mode;
+  short rev_fmtgrp;
+  char  fml_name[iFLDNAMELEN+1];
+  char  route_memo[101];
+};
+
+/* 数据库定义 */
+EXEC SQL INCLUDE sqlca;
+
+static int strdelpar(char *aBuf,unsigned int iLen);
+static int strtoupper(char *aBuf);
+static int swParsepproute(char *aBuf, struct swt_sys_route * psSwt_sys_route_d);
+static short swGetitemmode4(FILE *fp, int *piSegflag,char paFldname[][iFLDNAMELEN], char paFldvalue[][iFLDVALUELEN], char *aBuf);
+static int swExecsql(char *aSqlstr);
+int _swPresql(char *aSqlstr,char *aSqltext,char paSqlval[10][iFLDVALUELEN + 1],short *iFldnum,char *alSqlflag);
+extern int swRecvpacklw(short *, char *, unsigned int *, short *, long *, long *);
+extern int swSendpackl(short, char *, unsigned int , short, long, long);
+extern int _swExpN2T(char *aNstr,char *aTstr);
+
+/* 常量定义 */
+#define iALLCASE	0
+#define iCOMMAPP	1
+#define iCTRLAPP	2
+#define iCOMMREV	3
+#define iCTRLREV	4
+#ifndef DB_DB2
+#define DB_DB2
+#endif
+/* 变量定义 */
+static short igDebug;					/* 调试开关 */
+
+static long  lgClass;
+static long  lgType;
+static char  agDesc_pp[40];				/* 前置描述 */
+static char  agApptype[10];                             /* 应用类型*/
+static short igQid_pp;					/* 前置邮箱 */
+static short igQid_cm;					/* 通讯邮箱 */
+static short igTptimeout;				/* Tp begin 超时时间 */ 
+#ifdef TUXEDO_APP
+static short igInitflag = 0;				/* 初始化标志 */
+#endif
+ 
+static struct swt_sys_route *psgScript; 		/* 存放脚本内存指针 */
+static short igCount;
+static short igStartrow[5];				/* 脚本段起始行 */
+static short igRowcount[5];				/* 脚本段行数 */
+struct msgpack sgMsgpack;      		        	/* 报文 */
+union preunpackbuf psgVarbuf[iBUFFLDNUM];	        /* 临时变量池 */
+
+static char cgSqlflag;					/* 数据库操作标志 */
+static char agDbname[20];				/* 数据库名称 */
+#ifdef DB_ORACLE
+static char agUsrname[20];
+static char agPassword[20]; 
+#endif
+
+struct tpflag
+{
+  char  aTpflag[15];
+  short iFlagnum;
+};
+
+struct tpflag sgTpflag[14]={{"TPNOBLOCK",1},{"TPSIGRSTRT",2},{"TPNOREPLY",4},
+                            {"TPNOTRAN",8},{"TPTRAN",16},{"TPNOTIME",32},
+                            {"TPABSOLUTE",64},{"TPGETANY",128},
+                            {"TPNOCHANGE",256},{"RESERVED_BIT1",512},
+                            {"TPCONV",1024},{"TPSENDONLY",2048},
+                            {"TPRECVONLY",4096},{"TPACK",8192}};
+
+EXEC SQL BEGIN DECLARE SECTION;
+  char   alSqlstr[1024 + 1];
+  char   alSqltext[1024 + 1];
+  char   alSql[1024 + 1];
+EXEC SQL END DECLARE SECTION;
+
+/* 函数原型 */
+int swLoadcfg(char *);
+int swExecscript(int);
+int swMsgprocess(short);
+void swQuit(int);
+
+/**************************************************************
+ ** 函数名      ： main
+ ** 功  能      ： 主函数
+ ** 作  者      ：  
+ ** 建立日期    ：
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ： 无
+***************************************************************/
+int main(int argc, char **argv)
+{
+  int   ilRc;
+  short i,ilQid;
+  short ilMsglen;
+  short ilPriority;
+/*
+  long  lgClass,lgType;
+*/  
+  char  alCfgfile[41];
+
+  /* 检查命令行参数 */
+  if (argc != 2)
+  {
+    fprintf(stderr,"usage：swPreProcess 前置名称\n");
+    exit(FAIL);
+  }  
+
+  /* 处理信号 */
+  signal(SIGINT, SIG_IGN);
+  signal(SIGQUIT, SIG_IGN);
+  signal(SIGHUP, SIG_IGN);
+  signal(SIGTSTP, SIG_IGN);
+  signal(SIGCHLD, SIG_IGN);
+  signal(SIGTERM, swQuit);
+
+  /* 设置DEBUG文件 */
+  sprintf(agDebugfile, "%s.debug", argv[1]);
+ 
+  /* 刷新共享内存指针 */
+  if (swShmcheck() == FAIL)
+  {
+    swVdebug(0,"S0010: [错误/共享内存] 刷新共享内存指针失败");
+    swQuit(FAIL);
+  }
+
+  /* 读取配置文件 */
+  /* modify by nh 20021113 
+  sprintf(alCfgfile, "%s/preprocess/%s.SCR", getenv("SWITCH_CFGDIR"), argv[1]);*/
+  sprintf(alCfgfile, "%s/etc/preprocess/%s.SCR", getenv("SWITCH_DIR"), argv[1]);
+  if (swLoadcfg(alCfgfile) == FAIL)
+  {
+    swVdebug(0,"S0020: [错误/函数调用] swLoadcfg()函数,读取配置文件失败,返回码=-1");
+     exit(FAIL);
+  }
+
+  cgDebug = igDebug;
+  swVdebug(3,"S0030:      *** 配置表开始 ***\n");
+  swVdebug(3,"S0040: route_id route_cond q_target next_id oper_flg saf_flg end_flg route_memo");
+  for (i=0;i<igCount;i++)
+  {
+    swVdebug(3,"S0050: [%d] [%s] [%s] [%d] [%s] [%s] [%s] [%s]",
+    psgScript[i].route_id,
+    psgScript[i].route_cond,
+    psgScript[i].q_target,
+    psgScript[i].next_id,
+    psgScript[i].oper_flag,
+    psgScript[i].saf_flag,
+    psgScript[i].end_flag,
+    psgScript[i].route_memo);
+  }
+
+  swVdebug(3,"S0060:      *** 配置表结束 ***\n");
+ 
+  
+  /* 初始化前置进程 */
+  if (swInit(igQid_pp) == FAIL) 
+  {
+    swVdebug(0,"S0070: [错误/函数调用] swInit()函数,初始化前置进程失败,返回码=-1");
+     exit(FAIL);
+  }
+  swVdebug(2,"S0080: 初始化前置进程成功");
+
+  /* 连接本地信箱 */
+  if (swMbopen(igQid_pp))
+  {
+    swVdebug(0,"S0090: [错误/邮箱] swMbopen()函数,连接本地邮箱失败");
+     exit(FAIL);
+  }
+  swVdebug(2,"S0100: 连接本地邮箱[%d]成功",igQid_pp);
+ 
+  /* 连接数据库 */
+#ifdef DB_INFORMIX
+  if (cgSqlflag)
+  {
+    memset(alSqltext,0,sizeof(alSqltext));
+    sprintf(alSqltext,"DATABASE %s",agDbname);
+    EXEC SQL PREPARE dosql FROM :alSqltext;
+    if (sqlca.sqlcode) 
+    {
+      swVdebug(0,"S0110: [错误/数据库] sqlcode=%ld EXEC SQL PREPARE FROM %s",
+         sqlca.sqlcode,alSqltext);
+      exit(FAIL);
+    }
+    EXEC SQL EXECUTE dosql;
+    if (sqlca.sqlcode) 
+    {
+      swVdebug(0,"S0120: [错误/数据库]sqlcode=%ld EXEC SQL EXECUTE %s",sqlca.sqlcode, alSqltext);
+       exit(FAIL);
+    }
+    swVdebug(2,"S0130: 连接数据库成功");
+   }  
+#endif
+
+#ifdef DB_ORACLE
+  if (cgSqlflag)
+  {
+    EXEC SQL BEGIN DECLARE SECTION;
+      VARCHAR username[20];
+      VARCHAR password[20];
+    EXEC SQL END DECLARE SECTION;
+    strcpy((char *)username.arr,agUsrname);
+    username.len=strlen((char *)username.arr);
+    strcpy((char *)password.arr,agPassword);
+    password.len=strlen((char *)password.arr);
+    EXEC SQL CONNECT :username IDENTIFIED BY :password;
+    if (sqlca.sqlcode)
+    {
+      swVdebug(0,"S0140: [错误/数据库] 连接数据库失败[%ld]",sqlca.sqlcode);
+      exit(FAIL);
+    }
+    swVdebug(2,"S0150:连接数据库成功");
+   }
+#endif
+
+#ifdef DB_DB2
+  if (cgSqlflag)
+  {
+    memset(alSqltext,0,sizeof(alSqltext));
+    /* add by gxz 2001.10.17 */
+    strcpy(alSqltext,agDbname);
+    EXEC SQL connect to :alSqltext;
+    if (sqlca.sqlcode)
+    {
+      swVdebug(0,"S0160: [错误/数据库] sqlcode=%ld EXEC SQL connect to %s",sqlca.sqlcode,alSqltext);
+      exit(FAIL);
+    }
+    /* delete by gxz 2001.10.17
+    sprintf(alSqltext,"CONNECT TO %s",agDbname);
+    EXEC SQL PREPARE dosql FROM :alSqltext;
+    if (sqlca.sqlcode)
+    {
+      swVdebug(0,"S0170:数据库错误[%ld]: EXEC SQL PREPARE FROM %s",
+         sqlca.sqlcode,alSqltext);
+      exit(FAIL);
+    }
+    EXEC SQL EXECUTE dosql;
+    if (sqlca.sqlcode)
+    {
+      swVdebug(0,"S0180:数据库错误[%ld]: EXEC SQL EXECUTE %s",sqlca.sqlcode,alSqltext);
+       exit(FAIL);
+    }delete by gxz 2001.10.17 */
+    swVdebug(2,"S0190:连接数据库成功");
+   }
+#endif
+
+  /* 循环读取报文并作相应处理 */
+  for(;;)
+  {
+    ilMsglen = iMSGMAXLEN;
+    ilPriority = 0;
+    lgClass = 0;
+    lgType = 0;
+
+    /* 接收报文 */
+    memset((char *)&sgMsgpack, 0x00, ilMsglen);
+    ilRc = swRecvpacklw(&ilQid,(char *)&sgMsgpack, &ilMsglen, &ilPriority, &lgClass, &lgType);
+    if (ilRc) 
+    {
+      swVdebug(0,"S0200: [错误/函数调用] swRecvpackw()函数,接收报文出错,返回码=%d",ilRc);
+       swQuit(FAIL);
+    }
+    sgMsgpack.sMsghead.iBodylen = ilMsglen - sizeof(struct msghead);
+
+    if (cgDebug >= 3)
+    {
+      swDebugmsghead((char *)&sgMsgpack);
+      swDebughex(sgMsgpack.aMsgbody,sgMsgpack.sMsghead.iBodylen);
+    }
+
+    /* 清临时变量池 */
+    for (i=0;i<iBUFFLDNUM;i++)
+      psgVarbuf[i].sImfbuf.aFldname[0] = '\0';
+
+    /* 刷新共享内存指针 */
+    if (swShmcheck() == FAIL)
+    {
+      swVdebug(0,"S0210: [错误/共享内存] swShmcheck()函数,刷新共享内存指针失败");
+       swQuit(FAIL);
+    }
+    if ( (memcmp(agApptype,"TUXEDO",6) == 0) || 
+         (memcmp(agApptype,"CICS",4) == 0) )
+    {
+      ilRc = fork();
+      if (ilRc < 0)
+        swVdebug(0,"S0220: [错误/系统调用] fork进程失败,errno=%d[%s]",errno,strerror(errno));
+      else if (ilRc == 0) 
+      {
+        if (swMbopen(igQid_pp))
+        {
+          swVdebug(0,"S0230: [错误/邮箱] swMbopen()函数,连接本地邮箱失败,返回码=-1");
+          exit(FAIL);
+        }
+        swMsgprocess(ilQid);
+        swMbclose();
+        exit(0);
+      }
+      else {};
+    }
+    else
+      swMsgprocess(ilQid);
+  }
+}
+
+int swMsgprocess(short ilQid)
+{
+  int ilRc;
+
+  /* 执行公共脚本段 */
+  if (igRowcount[iALLCASE] > 0)
+  { 
+    ilRc = swExecscript(iALLCASE);
+    if (ilRc != SUCCESS)
+    {
+      swVdebug(0,"S0240: [错误/函数调用] swExecscript()函数,执行公共段脚本出错,返回码=%d",ilRc);
+      swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+      return(FAIL);
+    }
+  }
+
+LABEL:
+  /* 根据报文类型和源发邮箱做相应处理 */
+  switch(sgMsgpack.sMsghead.iMsgtype)
+  {
+    case iMSGAPP:
+      if (ilQid == igQid_cm)
+      {
+        swVdebug(2,"S0250: 收到通讯[%d]发来的应用报文",ilQid);
+        swVdebug(3,"S0260: 报文头:");
+        if (igDebug>=2)
+        {
+          swDebugmsghead((char *)&(sgMsgpack.sMsghead));
+          swVdebug(3,"S0270: 报文体:");
+          swDebughex(sgMsgpack.aMsgbody, sgMsgpack.sMsghead.iBodylen);
+        }  
+        ilRc = swExecscript(iCOMMAPP);
+        switch (ilRc)
+        {
+          case 0:
+            swVdebug(2,"S0280: 脚本执行成功[ilRc=%d]",ilRc);
+            swFmlset("_RTNCODE",2,"OK",psgVarbuf);
+            break;
+          case 1:
+            swVdebug(2,"S0290: LOAD报文头,重新执行对应脚本段[ilRc=%d]",ilRc);
+            swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            goto LABEL;
+            break;
+          case -1:
+            swVdebug(0,"S0300: 脚本执行出错[ilRc=%d]",ilRc);
+            swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            break;
+          default:
+            break;  
+        }
+      }
+      else	/* 主控发来应用报文 */
+      {
+        swVdebug(2,"S0310: 收到主控[%d]发来的应用报文",ilQid);
+        swVdebug(3,"S0320: 报文头:");
+        if (igDebug>=2)
+        {
+          swDebugmsghead((char *)&(sgMsgpack.sMsghead));
+          swVdebug(3,"S0330: 报文体:");
+          swDebughex(sgMsgpack.aMsgbody, sgMsgpack.sMsghead.iBodylen);
+        }  
+        ilRc = swExecscript(iCTRLAPP);
+        switch (ilRc)
+        {
+          case 0:
+            swVdebug(2,"S0340: 脚本执行成功[ilRc=%d]",ilRc);
+             swFmlset("_RTNCODE",2,"OK",psgVarbuf);
+            break;
+          case 1:
+            swVdebug(2,"S0350: LOAD报文头,重新执行对应脚本段[ilRc=%d]",ilRc);
+            swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            goto LABEL;
+            break;
+          case -1:
+            swVdebug(0,"S0360: [错误/函数调用] swExecscript()函数,脚本执行出错,返回码=%d",ilRc);
+            swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            break;
+          default:
+            break;
+        }    
+      }
+      break;
+       
+    case iMSGREV:
+      if (ilQid == igQid_cm)
+      {
+        swVdebug(2,"S0370: 收到通讯发来的冲正报文");  
+        swVdebug(3,"S0380: 报文头:");      
+        if (igDebug>=2)
+        {
+          swDebugmsghead((char *)&(sgMsgpack.sMsghead));
+          swVdebug(3,"S0390: 报文体:");
+          swDebughex(sgMsgpack.aMsgbody, sgMsgpack.sMsghead.iBodylen);
+        }  
+        ilRc = swExecscript(iCOMMREV);
+        switch (ilRc)
+        {
+          case 0:
+            swVdebug(2,"S0400: 脚本执行成功[ilRc=%d]",ilRc);
+            swFmlset("_RTNCODE",2,"OK",psgVarbuf);
+            break;
+          case 1:
+            swVdebug(2,"S0410: LOAD报文头,重新执行对应脚本段[ilRc=%d]",ilRc);
+             swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            goto LABEL;
+            break;
+          case -1:
+            swVdebug(0,"S0420: [错误/函数调用] swExecscript()函数,脚本执行出错,返回码=%d",ilRc);
+            swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            break;
+          default:
+            break;
+        }      
+      }
+      else
+      {
+        swVdebug(2,"S0430: 收到主控发来的冲正报文");
+        swVdebug(3,"S0440: 报文头:");
+        if (igDebug>=2)
+        {
+         
+          swDebugmsghead((char *)&(sgMsgpack.sMsghead));
+          swVdebug(3,"S0450:报文体:");
+          swDebughex(sgMsgpack.aMsgbody, sgMsgpack.sMsghead.iBodylen);
+        }  
+        ilRc = swExecscript(iCTRLREV);
+        switch (ilRc)
+        {
+          case 0:
+            swVdebug(2,"S0460: 脚本执行成功[ilRc=%d]",ilRc);
+             swFmlset("_RTNCODE",2,"OK",psgVarbuf);
+            break;
+          case 1:
+            swVdebug(2,"S0470: LOAD报文头,重新执行对应脚本段[ilRc=%d]",ilRc);
+             swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            goto LABEL;
+            break;
+          case -1:
+            swVdebug(0,"S0480: [错误/函数调用] swExecscript()函数,脚本执行出错,返回码=%d",ilRc);
+            swFmlset("_RTNCODE",5,"ERROR",psgVarbuf);
+            break;
+          default:
+            break;  
+        }
+      }
+      break;
+        
+    default:
+      swVdebug(2,"S0490:收到未知报文");
+       break; 
+  }  
+  return(SUCCESS);
+}    
+      
+/**************************************************************
+ ** 函数名      ：swExecscript
+ ** 功  能      ：执行脚本 
+ ** 作  者      :
+ ** 建立日期    ：2001/07/19
+ ** 最后修改日期：2001/07/19
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ：
+***************************************************************/
+int swExecscript(int iScriptseg)
+{
+  int   ilRc;
+  short i,j,ilScriptexit,ilResult,ilResultlen;
+  unsigned int ilTmp,ilQid, ilLen, ilPriority;
+/*
+  long  lgClass, lgType;  
+*/
+  char  alResult[iFLDVALUELEN+1];
+  char  alHeadkey[51];
+  
+  ilScriptexit = FALSE;
+  for (i = igStartrow[iScriptseg]; i < igStartrow[iScriptseg] + igRowcount[iScriptseg]; i++)
+  {
+    /* 判断脚本执行条件 */
+    ilResult = FALSE;
+    if (strlen(psgScript[i].route_cond) == 0)
+      ilResult = TRUE;
+    else
+    {
+      _swExpress(psgScript[i].route_cond,alResult,&ilResultlen);
+      if (alResult[0] != '0') ilResult = TRUE;
+      swVdebug(2,"S0500: 条件表达式{%s}%s", psgScript[i].route_cond, (alResult[0] != '0' ? "成立" : "不成立"));
+     }
+    if (ilResult == FALSE) continue;
+ 
+    /* 根据脚本动作做相应的处理 */
+    switch (psgScript[i].oper_flag[0])
+    {
+      case cppGOTO:
+        swVdebug(2,"S0510: 执行脚本动作{GOTO %d}", psgScript[i].next_id);
+         if (psgScript[i].next_id == 0)	/* 脚本段间跳转 */
+        {
+          ilScriptexit = TRUE;
+          ilRc = 1;
+          break;
+        }
+        else	/* 脚本段内跳转 */
+        {
+          for (j = igStartrow[iScriptseg]; j < igRowcount[iScriptseg]; j++)
+            if (psgScript[j].route_id == psgScript[i].next_id) break;
+          if (j >= igRowcount[iScriptseg])
+          {
+            swVdebug(0,"S0520: [错误/其它] GOTO语句越界");
+            ilScriptexit = TRUE;
+            ilRc = -1;
+          }
+          else
+            i = j - 1;
+        }
+        break;
+      case cppUNPACK:	/* 解包 */
+        swVdebug(2,"S0530: 执行脚本动作{UNPACK}");
+         switch (sgMsgpack.sMsghead.iMsgtype)
+        {
+          case iMSGAPP:
+            sgMsgpack.sMsghead.iMsgtype = iMSGUNPACK;
+            break;
+          case iMSGREV:
+            sgMsgpack.sMsghead.iMsgtype = iMSGREVUNPACK;
+            break;
+          default:
+            swVdebug(0,"S0540: [错误/其它] 未知报文类型");  
+             ilScriptexit = TRUE;
+            ilRc = -1;
+            break;
+        }
+        sgMsgpack.sMsghead.iOrg_q = igQid_pp;
+  
+        /* 调用格式转换函数 */
+        ilRc = swFormat(&sgMsgpack); 
+        switch (ilRc)
+        {
+          case 0:
+            swVdebug(2,"S0550:格式转换成功");
+             switch (sgMsgpack.sMsghead.iMsgtype)
+            {
+              case iMSGUNPACK:
+                sgMsgpack.sMsghead.iMsgtype = iMSGAPP;
+                break;
+              case iMSGREVUNPACK:
+                sgMsgpack.sMsghead.iMsgtype = iMSGREV;
+                break;
+            }
+            break;
+          default:
+            swVdebug(0,"S0560: [错误/函数调用] swFormat()函数,格式转换出错,返回码=%d", ilRc);          
+             ilScriptexit = TRUE;
+            ilRc = -1;
+            break;
+        }
+        break;
+      case cppPACK:	/* 打包 */
+        swVdebug(2,"S0570: 执行脚本动作{PACK}");
+         switch (sgMsgpack.sMsghead.iMsgtype)
+        {
+          case iMSGAPP:
+            sgMsgpack.sMsghead.iMsgtype = iMSGPACK;
+            break;
+          case iMSGREV:
+            sgMsgpack.sMsghead.iMsgtype = iMSGREVPACK;
+            break;
+        }
+        sgMsgpack.sMsghead.iDes_q = igQid_pp;
+  
+         /* 调用格式转换函数 */
+        ilRc = swFormat(&sgMsgpack);
+        switch (ilRc)
+        {
+          case 0:
+            swVdebug(2,"S0580: 格式转换成功");
+             switch (sgMsgpack.sMsghead.iMsgtype)
+            {
+              case iMSGPACK:
+                sgMsgpack.sMsghead.iMsgtype = iMSGAPP;
+                break;
+              case iMSGREVPACK:
+                sgMsgpack.sMsghead.iMsgtype = iMSGREV;
+                break;
+            }
+            break;
+          default:
+            swVdebug(0,"S0590: [错误/函数调用] swForamt()函数,格式转换出错,返回码=%d", ilRc);          
+             ilScriptexit = TRUE;
+            ilRc = -1;
+            break;
+        }
+        break;
+      case cppNEWTRAN: /* 生成新交易报文头 */
+        swVdebug(2,"S0600: 执行脚本动作{NEWTRAN}");
+        ilTmp = sgMsgpack.sMsghead.iBodylen;
+
+        ilRc = swNewtran(&(sgMsgpack.sMsghead));
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0610: [错误/函数调用] swNewtran()函数,生成新交易报文头失败,返回码=%d",ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        } 
+        sgMsgpack.sMsghead.iBodylen = ilTmp;
+        swVdebug(3,"S0620: 新交易: lgClass = [%ld], lgType = [%ld]",lgClass,lgType);
+        memcpy(sgMsgpack.sMsghead.aMemo,(char *)&lgClass,sizeof(long));
+        memcpy(sgMsgpack.sMsghead.aMemo + sizeof(long),(char *)&lgType,sizeof(long));
+        break;
+      case cppLOADHEAD:	/* 取报文头 */
+        swVdebug(2,"S0630:执行脚本动作{LOADHEAD}");
+        ilTmp = sgMsgpack.sMsghead.iBodylen;
+        ilRc = swGetheadkey(igQid_pp, &sgMsgpack, psgScript[i].q_target, alHeadkey);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0640: [错误/函数调用] swGetheadkey()函数,计算存取报文头关键字出错,返回码=%d",ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        }
+        
+        ilRc = swLoadmsghead(igQid_pp, alHeadkey, &sgMsgpack.sMsghead);
+        if (ilRc == FAIL) /* success sqlnotfound fail */
+        {
+          swVdebug(0,"S0650: [错误/函数调用] swLoadmsghead()函数,取报文头出错,返回码=-1");
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        }  
+        swDebugmsghead((char *)&sgMsgpack);
+        sgMsgpack.sMsghead.iBodylen = ilTmp;
+        break;
+      case cppSAVEHEAD: /* 存报文头 */
+        swVdebug(2,"S0660: 执行脚本动作{SAVEHEAD}");
+         ilRc = swGetheadkey(igQid_pp, &sgMsgpack, psgScript[i].q_target, alHeadkey);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0670: [错误/函数调用] swGetheadkey()函数,计算存取报文头关键字出错,返回码=%d",ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        }
+        ilRc = swSavemsghead(igQid_pp, alHeadkey, &sgMsgpack.sMsghead);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0680: [错误/函数调用] swSavemsghead()函数,存报文头出错,返回码=%d",ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        }        
+        break;
+      case cppREVISE: /* 冲正 */
+        swVdebug(2,"S0690: 执行脚本动作{ROLLBACK}");
+        ilRc = swTranrev(sgMsgpack.sMsghead.lTranid);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0700: [错误/函数调用] swTranrev()函数,发送冲正请求报文失败,返回码=%d",ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        }
+        break;  
+      case cppSEND: /* 发送报文 */
+        swVdebug(2,"S0710: 执行脚本动作{SEND}");
+         ilLen = sgMsgpack.sMsghead.iBodylen + sizeof(struct msghead);
+        ilPriority = 0;
+        lgClass = 0;
+        ilRc = _swExpress(psgScript[i].q_target,alResult,&ilResultlen);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0720: [错误/函数调用] _swExpress()函数,目标邮箱表达式[%s]计算出错,返回码=%d",psgScript[i].q_target,ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+        }
+        ilQid = atoi(alResult);
+
+        if (ilQid == igQid_cm)
+        {
+          lgClass = *((long *)sgMsgpack.sMsghead.aMemo);
+          lgType = *((long *)(sgMsgpack.sMsghead.aMemo + sizeof(long)));
+          swVdebug(3,"S0730: 发往通讯邮箱: lgClass = [%ld], lgType = [%ld]",lgClass,lgType);
+        }
+        else
+        {
+          ilRc = _swExpress(psgScript[i].route_memo,alResult,&ilResultlen);
+          if (ilRc != SUCCESS)
+          {
+            swVdebug(0,"S0740: [错误/函数调用] _swExpress()函数,报文类型表达式[%s]计算出错,返回码=%d",psgScript[i].route_memo,ilRc);
+            ilScriptexit = TRUE;
+            ilRc = -1;
+          }
+          lgType = atol(alResult);
+        }
+
+/* add by gxz 2001.10.10 */
+        if ( psgScript[i].saf_flag[0]=='1' )
+/* add by gxz 2001.10.10 */
+        {
+          sgMsgpack.sMsghead.cSafflag = psgScript[i].saf_flag[0];
+        }
+        ilRc = swSendpackl(ilQid,(char *)&sgMsgpack,ilLen,ilPriority,lgClass,lgType);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0750: [错误/函数调用] swSendpack()函数,发送报文至邮箱[%d]失败,返回码=%d", ilQid,ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+        }  
+        break;
+      case cppSQL:
+        swVdebug(2,"S0760:执行脚本动作{EXECSQL}");
+        ilRc = swExecsql(psgScript[i].q_target);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0770: [错误/函数调用] swExecsql()函数,数据库操作失败[%s],返回码=%d",psgScript[i].q_target,ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+        }  
+        break;
+#ifdef TUXEDO_APP
+      case cppCALLSERV:
+        swVdebug(2,"S0780: 执行脚本动作{CALLSERV}");
+        alTmp1 = psgScript[i].q_target;
+        alTmp2 = strchr(alTmp1,',');
+        if (alTmp2 == NULL)
+        {
+          strcpy(alServname,alTmp1);
+          llServflag = 0;
+        }
+        else
+        {
+          alTmp3 = alTmp2 + 1;
+          *alTmp2 = '\0';
+          _swTrim(alTmp1);
+          strcpy(alServname,alTmp1);
+          _swTrim(alTmp3);
+          ilRc = swTpflagGet(alTmp3,&llServflag);
+          if( ilRc == FAIL )
+          {
+            swVdebug(0,"S0790: [错误/函数调用] swTpflagGet()函数,输入TUXEDO FLAG 表达式[%s]错误,返回码=%d",alTmp3,ilRc);
+            ilScriptexit = TRUE;
+            ilRc = -1;
+            tpterm();
+            break;
+          }
+        }
+        swVdebug(3,"S0800: Flags to service routines=[%ld]",llServflag);
+ 
+        swVdebug(0,"S0810: [错误/其它] Initflag = [%d] ",igInitflag);
+        if (igInitflag == 0)
+        {
+          if (tpinit((TPINIT *) NULL) == -1)
+          {
+            swVdebug(0,"S0820: [错误/其它] Tpinit failed tperrno:%d",tperrno);
+            ilScriptexit = TRUE;
+            ilRc = -1;
+            break;
+          }
+          igInitflag = 1;
+        }
+ 
+        sendlen = sgMsgpack.sMsghead.iBodylen;
+
+        /* Allocate STRING buffers for the request and the reply */
+        if((sendbuf = (char *) tpalloc("STRING", NULL, sendlen+1)) == NULL)
+        {
+          swVdebug(0,"S0830: [错误/其它] Error allocating send buffer,tperrno:%d",tperrno);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          tpterm();
+          break;
+        }
+
+        if((rcvbuf = (char *) tpalloc("STRING", NULL, 8192+1)) == NULL)
+        {
+          swVdebug(0,"S0840: [错误/其它] Error allocating receive buffer,tperrno:%d",tperrno);
+          tpfree(sendbuf);
+          tpterm();
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        }
+
+        strcpy(sendbuf,sgMsgpack.aMsgbody);
+
+        ilRc = tpcall(alServname,(char *)sendbuf,sendlen,
+          (char **)&rcvbuf,&llMsglen,llServflag);
+        if( ilRc < 0 )
+        {
+          swVdebug(0,"S0850: [错误/其它] CALLSERV[%s] ERROR,tperrno:%d",alServname,tperrno);
+          tpfree(sendbuf);
+          tpfree(rcvbuf);
+          tpterm();
+          ilScriptexit = TRUE;
+          ilRc = -1;
+          break;
+        } 
+        strcpy(sgMsgpack.aMsgbody,rcvbuf);
+        sgMsgpack.sMsghead.iBodylen = llMsglen;
+        break;
+      case cppBEGINCALL:
+        swVdebug(2,"S0860: 执行脚本动作{BEGINCALL}");
+         if (igInitflag == 0)
+        {
+          if (tpinit((TPINIT *) NULL) == -1) 
+          {
+            swVdebug(0,"S0870: [错误/其它] Tpinit failed tperrno:%d",tperrno);
+            ilScriptexit = TRUE;
+            ilRc = -1;
+            break;
+          }
+          igInitflag = 1;
+        }
+
+        ilRc = tpbegin(igTptimeout,0);
+        if( ilRc < 0)
+        {
+          swVdebug(0,"S0880: [错误/其它] BEGINCALL ERROR! timeout=[%d] tperrno:%d",igTptimeout,tperrno);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+        }
+        break;
+      case cppCOMMITCALL:
+        swVdebug(2,"S0890: 执行脚本动作{COMMITCALL}");
+         ilRc = tpcommit(0);
+        if(ilRc < 0)
+        {
+          swVdebug(0,"S0900: [错误/其它] COMMITCALL ERROR ! tperrno:%d",tperrno);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+        }
+        tpfree(sendbuf);
+        tpfree(rcvbuf);
+        tpterm();
+        igInitflag = 0;
+        break;
+      case cppROLLBACKCALL:
+        swVdebug(2,"S0910: 执行脚本动作{ROLLBACLCALL}");
+        tpabort(0);
+        tpfree(sendbuf);
+        tpfree(rcvbuf);
+        tpterm();
+        igInitflag = 0;
+        break;
+#endif
+      case cppBEGINWORK:
+        swVdebug(2,"S0920: 执行脚本动作{BEGINWORK}");
+#ifdef DB_INFORMIX
+         EXEC SQL BEGIN WORK;
+#endif
+        break;
+      case cppCOMMITWORK:
+        swVdebug(2,"S0930: 执行脚本动作{COMMITWORK}");
+         EXEC SQL COMMIT WORK;
+        break;
+      case cppROLLBACKWORK:
+        swVdebug(2,"S0940: 执行脚本动作{ROLLBACKWORK}");
+         EXEC SQL ROLLBACK WORK;
+        break;
+      case cppOTHER:
+        swVdebug(2,"S0950: 执行脚本动作{%S}",psgScript[i].q_target);
+         ilRc = _swExpress(psgScript[i].q_target,alResult,&ilResultlen);
+        if (ilRc != SUCCESS)
+        {
+          swVdebug(0,"S0960: [错误/函数调用] 执行脚本出错[%s],返回码=%d",psgScript[i].q_target,ilRc);
+          ilScriptexit = TRUE;
+          ilRc = -1;
+        }
+        break;
+      case cppRETURN:
+        swVdebug(2,"S0970: 执行脚本动作{RETURN}");
+         ilScriptexit = TRUE;
+        ilRc = 0;
+        break;
+      default:
+        swVdebug(0,"S0980: [错误/其它] 无法识别的脚本动作");
+        ilScriptexit = TRUE;
+        ilRc = -1;
+        break;
+    }       
+    if (ilScriptexit) break;
+  }
+  return(ilRc);
+}
+      
+/**************************************************************
+ ** 函数名      ：swQuit
+ ** 功  能      ：关闭数据库和邮箱 
+ ** 作  者      :
+ ** 建立日期    ：2001/07/19
+ ** 最后修改日期：2001/07/19
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ：
+***************************************************************/
+void swQuit(int sig)
+{
+  int ilRc;
+
+  /* 关闭数据库 */
+  if (cgSqlflag)
+  {
+    ilRc = swDbclose();
+    if (ilRc)
+      swVdebug(0,"S0990: [错误/数据库] 关闭数据库出错,sqlcode=%d",ilRc);
+  }
+
+  /* 关闭邮箱 */
+  if (swMbclose())
+    swVdebug(0,"S1000: [错误/邮箱] 关闭邮箱出错");
+   
+  swVdebug(2,"S1010: 前置进程[%s][%d]退出", agDesc_pp, igQid_pp);
+   exit(0);
+} 
+
+/***************************************************************
+ ** 函数名      : swLoadcfg
+ ** 功  能      : 读前置配置文件
+ ** 作  者      : 
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数: swGetitemmode1
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+int swLoadcfg(char *aFilename)
+{
+  char   alBuf[257],alBuf_rc[257];
+  char   palFldname[iFLDNUMBER][iFLDNAMELEN];
+  char   palFldvalue[iFLDNUMBER][iFLDVALUELEN];
+  char   alFldvalue[iFLDVALUELEN];
+  char   alServername[iFLDVALUELEN],alUserid[iFLDVALUELEN];
+  char   alPassword[iFLDVALUELEN];
+  int    ilCount0=0,ilCount1=0,ilCount2=0,ilCount3=0,ilCount4=0;
+  int    ilPos0=0,ilPos1=0,ilPos2=0,ilPos3=0,ilPos4=0;
+  int    ilRc,ilSegflag;
+  short  ilNewsecflag = 0;
+  struct swt_sys_route slSwt_sys_route;
+  FILE   *fp;
+
+  if ((fp = fopen(aFilename,"r")) == NULL)  return (FAIL);
+  memset(alBuf,0x00,sizeof(alBuf));
+  ilSegflag = 0;
+  igCount = 0;
+
+  while (1)
+  {
+    ilRc = swGetitemmode4(fp,&ilSegflag,palFldname,palFldvalue,alBuf_rc);
+    if (ilRc != 0) break;
+    if (ilSegflag <= 2)
+    {
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"PPDESC",alFldvalue);
+      if (ilRc == 0)
+        strcpy(agDesc_pp, alFldvalue);
+	  
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"PPQID",alFldvalue);
+      if (ilRc == 0)
+        igQid_pp = atoi(alFldvalue);
+	  
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"COMQID",alFldvalue);
+      if (ilRc == 0)
+        igQid_cm = atoi(alFldvalue);
+
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"APPTYPE",alFldvalue);
+      if (ilRc == 0)
+        strcpy(agApptype, alFldvalue);
+
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"TPTIMEOUT",alFldvalue);
+      if (ilRc == 0)
+        igTptimeout = atoi(alFldvalue);
+
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"DEBUG",alFldvalue);
+      if (ilRc == 0)
+        igDebug = atoi(alFldvalue);
+	  
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"DBNAME",alFldvalue);
+      if (ilRc == 0)
+        if (strlen(alFldvalue) > 0)
+        {
+          strcpy(agDbname, alFldvalue);
+          cgSqlflag = 1;
+        }
+      
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"SERVERNAME",alFldvalue);
+      if(ilRc == 0)
+        strcpy(alServername,alFldvalue);
+        
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"USERID",alFldvalue);
+      if(ilRc == 0)
+        strcpy(alUserid,alFldvalue); 
+         
+      ilRc = _swGetvaluemode1(palFldname,palFldvalue,"PASSWORD",alFldvalue);  
+      if(ilRc == 0)
+        strcpy(alPassword,alFldvalue);
+        
+    }
+    else if (ilSegflag >= 3)
+    {
+      memset(&slSwt_sys_route,0x00,sizeof(struct swt_sys_route));
+      if (swParsepproute(alBuf_rc,&slSwt_sys_route) != 0)
+      {
+        swVdebug(0,"S1020: [错误/函数调用] swParsepproute()函数,返回码=-1");
+        goto ErrorExit;
+      }
+      igCount ++;
+      if (igCount == 1)
+        psgScript = (struct swt_sys_route *)
+          malloc(sizeof(struct swt_sys_route));
+      else
+        psgScript = (struct swt_sys_route *)
+          realloc(psgScript, igCount * (sizeof(struct swt_sys_route)));
+               
+      if (psgScript == NULL)
+      {
+        swVdebug(0,"S1030: [错误/系统调用] malloc()/realloc(),errno=%d[%s]",errno,strerror(errno));
+        goto ErrorExit; 
+      }
+      switch (ilSegflag)
+      {
+        case 3:
+          /* ALLCASE */
+          if (ilNewsecflag != 3) ilPos0 = igCount - 1;
+          ilNewsecflag = 3;
+          ilCount0++;
+          break;
+        case 4:
+          /* COMMAPP */
+          if (ilNewsecflag != 4) ilPos1 = igCount - 1;
+          ilNewsecflag = 4;
+          ilCount1++;
+          break;
+        case 5:
+          /* CTRLAPP */
+          if (ilNewsecflag != 5) ilPos2 = igCount - 1;
+          ilNewsecflag = 5;
+          ilCount2++;
+          break;
+        case 6:
+          /* COMMREV */
+          if (ilNewsecflag != 6) ilPos3 = igCount - 1;
+          ilNewsecflag = 6;
+          ilCount3++;
+          break;
+        case 7:
+          /* CTRLREV */
+          if (ilNewsecflag != 7) ilPos4 = igCount - 1;
+          ilNewsecflag = 7;
+          ilCount4++;
+          break;
+        default:
+          goto ErrorExit;
+          break;
+      }
+      memcpy(&(psgScript[igCount - 1]), &slSwt_sys_route, 
+        sizeof(struct swt_sys_route));
+    }
+  } 
+  igRowcount[0] = ilCount0;
+  igRowcount[1] = ilCount1;
+  igRowcount[2] = ilCount2;
+  igRowcount[3] = ilCount3;
+  igRowcount[4] = ilCount4;
+
+  igStartrow[0] = ilPos0;
+  igStartrow[1] = ilPos1;
+  igStartrow[2] = ilPos2;
+  igStartrow[3] = ilPos3;
+  igStartrow[4] = ilPos4;
+
+  fclose(fp);
+  return 0;
+
+  ErrorExit:
+    if (psgScript != NULL) 
+      free(psgScript);
+            
+    fclose(fp);
+    return -1;
+}
+
+/***************************************************************
+ ** 函数名      : swExecsql
+ ** 功  能      : 执行SQL脚本
+ ** 作  者      : 
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+static int swExecsql(char *aSqlstr)
+{
+  static FILE	*fp;		/* 文件指针 */
+  static char	alFilename[31];	/* 文件名 */
+  short   i,j;                 /* 临时计数变量 */
+  short   ilRc;                /* 返回码 0-成功 非0-不成功 */
+  unsigned int ilMsglen;            /* 报文长度 */
+  short   ilFldnum=0;          /* 域名 */
+  char    alSqlcode[iFLDVALUELEN + 1];
+  char    alSqlnrows[iFLDVALUELEN + 1];
+  char    alFldname[iFLDNAMELEN + 1];
+  char    palSqlval[10][iFLDVALUELEN + 1];
+  char    cSqlflag;            /* SQL语句标识 */
+  char    alCur[21];           /* 游标名 */
+  char    alBuf[201];
+  char    alSelectresult[iFLDVALUELEN]; 
+  char    *alPos;
+  long    llTranid;            /* 交易流水号 */
+
+  EXEC SQL BEGIN DECLARE SECTION;
+    struct sqlresult
+    {
+       char aStr0[101];
+       char aStr1[101];
+       char aStr2[101];
+       char aStr3[101];
+       char aStr4[101];
+       char aStr5[101];
+       char aStr6[101];
+       char aStr7[101];
+       char aStr8[101];
+       char aStr9[101];
+    }slSqlresult;
+    char ilTmp[101];
+  EXEC SQL END DECLARE SECTION;
+
+  /* 解析SQL语句 */
+  swVdebug(4,"S1040: [函数调用] swExecsql()");
+  ilRc = _swPresql(aSqlstr,alSqltext,palSqlval,&ilFldnum,&cSqlflag);
+  if (ilRc)
+  {
+    swVdebug(0,"S1050: [错误/函数调用] _swPresql()函数,SQL语句不合法,返回码=%d",ilRc);
+    return(FAIL);
+  }  
+
+  strcpy(alSqlcode,"0");
+  strcpy(alSqlnrows,"0");
+
+  switch( cSqlflag)
+  {
+    case 'S':	/* SELECT */
+      EXEC SQL PREPARE dosql1 FROM :alSqltext;
+      if (sqlca.sqlcode!=0) 
+      {
+        swVdebug(0,"S1060: [错误/数据库] sqlcode=%ld:PREPARE dosql1 FROM %s",sqlca.sqlcode,alSqltext);
+        sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+        break;
+      }
+      EXEC SQL DECLARE cur1 CURSOR FOR dosql1;
+      if (sqlca.sqlcode!=0)
+      {
+        swVdebug(0,"S1070: [错误/数据库] sqlcode=%ld:DECLARE cur1 CURSOR FOR dosql1",sqlca.sqlcode);
+        sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+        break;
+      }
+      EXEC SQL OPEN cur1;
+      if (sqlca.sqlcode!=0) 
+      {
+        swVdebug(0,"S1080: [错误/数据库] sqlcode=%ld:OPEN cur1",sqlca.sqlcode);
+        sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+        break;
+      }
+      for(i=0; ;i++)
+      {
+        /*EXEC SQL FETCH cur1 into :slSqlresult;*/
+        EXEC SQL FETCH cur1 into :ilTmp;
+        if (sqlca.sqlcode == SQLNOTFOUND)
+        {
+          if (i == 0) sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+          break;
+        }
+        if (sqlca.sqlcode)
+        {
+          sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+          break;
+        }
+
+        for (j=0;j<ilFldnum;j++)
+        {
+          sprintf(alFldname,"%s#%c",palSqlval[j],i+1);
+          strcpy(alBuf,slSqlresult.aStr0 + 101*j);
+          _swTrim(alBuf);
+          if (alFldname[0] == ':')
+          {
+            ilMsglen = sgMsgpack.sMsghead.iBodylen;
+            ilRc = swFmlpackset(sgMsgpack.aMsgbody,&ilMsglen,alFldname+1,strlen(
+alBuf),alBuf);
+            if (ilRc)
+            {
+              swVdebug(0,"S1090: [错误/函数调用] swFmlpackset()函数,置报文域%s出错,返回码=%d",alFldname+1,ilRc);
+              return(FAIL);
+            }
+
+          }
+          else
+          {
+            ilRc = swFmlset(alFldname,strlen(alBuf),alBuf,psgVarbuf);
+            if (ilRc)
+            {
+              swVdebug(0,"S1100: [错误/函数调用] swFmlset()函数,置临时变量池%s出错,返回码=%d",alFldname);
+              return(FAIL);
+            }
+          }
+        }
+      }
+      EXEC SQL CLOSE cur1;
+      sprintf(alSqlnrows,"%d",i);
+      break;
+    case 'U':	/* UPDATE */
+    case 'I':	/* INSERT */
+    case 'D':	/* DELETE */
+        EXEC SQL PREPARE dosql2 FROM :alSqltext;
+        if (sqlca.sqlcode) 
+        {
+          swVdebug(0,"S1110: [错误/数据库] sqlcode=%ld:PREPARE dosql2 FROM %s",sqlca.sqlcode,alSqltext);
+          sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+          break;
+        }
+        EXEC SQL EXECUTE dosql2;
+        if (sqlca.sqlcode) 
+        {
+          swVdebug(0,"S1120: [错误/数据库] sqlcode=%ld:EXEC SQL EXECUTE dosql2 %s",sqlca.sqlcode,alSqltext);
+          sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+          break;
+        }
+        sprintf(alSqlnrows,"%ld",sqlca.sqlerrd[2]);
+        break;
+    case 'O':	/* OPEN */
+      alPos = strstr(alSqltext,"CURSOR");
+      if (!alPos)
+      {
+         swVdebug(0,"S1130: [错误/其它] SQL语句定义错误:%s",alSqltext);
+         return(FAIL);
+      }
+      strncpy(alCur,alSqltext + 5,alPos -alSqltext -6);
+      alPos = strstr(alSqltext,"SELECT ");
+      if (!alPos)
+      {
+         swVdebug(0,"S1140: [错误/其它] SQL语句定义错误:%s",alSqltext);
+         return(FAIL);
+      }
+      strcpy(alSql,alPos);
+      _swTrim(alSql);
+      EXEC SQL PREPARE dosql3 FROM :alSql;
+      if (sqlca.sqlcode) 
+      {
+        swVdebug(0,"S1150: [错误/数据库] sqlcode=%ld:PREPARE dosql3 FROM %s",sqlca.sqlcode,alSql);
+        sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+        break;
+      }
+      EXEC SQL DECLARE alCur CURSOR FOR dosql3 ;
+      if (sqlca.sqlcode)
+      {
+        swVdebug(0,"S1160: [错误/数据库] sqlcode=%ld:PREPARE dosql3 FROM %s",sqlca.sqlcode,alSql);
+        sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+        break;
+      }
+      EXEC SQL OPEN alCur;
+      if (sqlca.sqlcode) 
+      {
+        swVdebug(0,"S1170: [错误/数据库] 打开游标错误,sqlcode=%ld",sqlca.sqlcode);
+        sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+        break;
+      }
+      /* 创建名为游标名.交易流水号的临时文件 */
+      llTranid = sgMsgpack.sMsghead.lTranid;
+      sprintf(alFilename,"%s/tmp/%s.%ld",getenv("SWITCH_DIR"),alCur,llTranid);
+      if ((fp= fopen(alFilename,"r+")) == NULL)
+      {
+        swVdebug(0,"S1180: [错误/系统调用] fopen()函数,创建临时文件出错,errno=%d[%s]",errno,strerror(errno));
+        return(FAIL);
+      }
+      for (i=0;;i++)
+      {
+        EXEC SQL FETCH alCur into :slSqlresult;
+        if (sqlca.sqlcode == SQLNOTFOUND)
+        {
+          if (i == 0) sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+          break;
+        }
+        if (sqlca.sqlcode)
+        {
+          sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+          break;
+        }
+        for (j=0;j<ilFldnum;j++)
+        {
+          strcpy(alBuf,slSqlresult.aStr0 + 101*j);
+          _swTrim(alBuf);
+          sprintf(alBuf,"%s|",alBuf);
+          fwrite(alBuf,sizeof(char),strlen(alBuf),fp); 
+        }
+        fputc('\n',fp);
+      }
+      EXEC SQL CLOSE alCur;
+      sprintf(alSqlnrows,"%d",i);
+      fflush(fp);
+      fseek(fp,0,SEEK_SET);
+      break;
+    case 'F':	/* FETCH */
+      /* 从文件中读取一条记录 */
+      memset(alBuf,0x00,sizeof(alBuf));
+      for(i=0; ;i++)
+      {
+        alBuf[i] = fgetc(fp);
+        if(alBuf[i] == '\n' || alBuf[i] == EOF)
+          break;
+      }   
+      if ( i == 0)
+      {
+        sprintf(alSqlcode,"%d",SQLNOTFOUND);
+        break;
+      }
+      strcpy(alSqlnrows,"1");
+      for (j = 0;j < ilFldnum;j++)
+      {
+        _swGetOneField(alBuf,j+1,alSelectresult,'|');
+        strcpy(alFldname,palSqlval[j]);
+        if (alFldname[0] == ':')
+        {
+          ilMsglen = sgMsgpack.sMsghead.iBodylen;
+          ilRc = swFmlpackset(sgMsgpack.aMsgbody,&ilMsglen,alFldname+1,strlen(alSelectresult),alSelectresult);
+          if (ilRc)
+          {
+            swVdebug(0,"S1190: [错误/函数调用] swFmlpackset()函数,置报文域%s出错,返回码=%d",alFldname+1,ilRc);
+            return(FAIL);
+          }
+        }
+        else
+        {
+          ilRc = swFmlset(alFldname,strlen(alSelectresult),alSelectresult,psgVarbuf);
+          if (ilRc)
+          {
+            swVdebug(0,"S1200: [错误/函数调用] swFmlset()函数,置临时变量池%s出错,返回码=%d",alFldname,ilRc);
+            return(FAIL);
+          }
+        }
+      }
+      break;
+    case 'C':	/* CLOSE */
+      fclose(fp);
+      unlink(alFilename);
+      break;
+    default:
+      swVdebug(0,"S1210: [错误/数据库] SQL语句[%s]定义错误",alSqltext);
+       return(FAIL);
+      break;
+  }
+  ilRc = swFmlset("_SQLCODE",strlen(alSqlcode),alSqlcode,psgVarbuf);
+  if (ilRc) 
+  {
+    swVdebug(0,"S1220: [错误/函数调用] swFmlset()函数,置临时变量池[_SQLCODE]域出错,返回码=%d",ilRc);
+    return(FAIL);
+  }
+  ilRc = swFmlset("_SQLNROWS",strlen(alSqlnrows),alSqlnrows,psgVarbuf);
+  if (ilRc) 
+  {
+    swVdebug(0,"S1230: [错误/函数调用] swFmlset()函数,置临时变量池[_SQLNROWS]域出错,返回码=%d",ilRc);
+    return(FAIL);
+  }
+  swVdebug(4,"S1240: [函数返回] swExecsql()返回码=0");
+  return(0);
+}
+
+int swTpflagGet(char *aBuf,long *plTpflag)
+{ 
+  int    i = 0;
+  short  ilNumflag = 0,ilChrflag = 0,ilFindflag;
+  char   *alTmp1,*alTmp2,*alTmp3;
+
+  swVdebug(4,"S1250: [函数调用] swTpflagGet()");
+  while( aBuf[i] != '\0' )
+  {
+    if( isdigit(aBuf[i]) )
+      ilNumflag = 1;
+    else
+      ilChrflag = 1;
+    i++;
+  }
+  if( ilNumflag && !ilChrflag )
+  {
+    *plTpflag = atol(aBuf);
+    return(SUCCESS);
+  }
+  if( ilChrflag )
+  {
+    alTmp2 = alTmp3 = aBuf;
+    *plTpflag = 0;
+    while( (alTmp1 = strchr(alTmp2,'|')) != NULL )
+    {
+      alTmp2 = alTmp1 + 1;
+      *alTmp1 = '\0';
+      _swTrim(alTmp3);
+      ilFindflag = 0;
+      for(i=0;i<14;i++)
+      {
+        if(!strcmp(alTmp3,sgTpflag[i].aTpflag))
+        {
+          *plTpflag = *plTpflag | sgTpflag[i].iFlagnum;
+          ilFindflag = 1;
+          break;
+        }
+      }
+      if( ilFindflag == 0 ) return(FAIL);
+      alTmp3 = alTmp2;
+    }   
+    ilFindflag = 0;
+    _swTrim(alTmp3);
+    for(i=0;i<14;i++)
+    {
+      if(!strcmp(alTmp3,sgTpflag[i].aTpflag))
+      {
+        *plTpflag = *plTpflag | sgTpflag[i].iFlagnum;
+        ilFindflag = 1;
+        break;
+      }
+    }
+    if( ilFindflag == 0 ) return(FAIL);
+    swVdebug(4,"S1260: [函数返回] swTpflagGet()返回码=0");
+    return(SUCCESS); 
+  }
+  return(FAIL); 
+}
+
+
+/***************************************************************
+ ** 函数名      : swParsepproute
+ ** 功  能      : 解析前置route脚本
+ ** 作  者      :
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+static int swParsepproute(char *aBuf, struct swt_sys_route * psSwt_sys_route_d)
+{
+  char *alTmp1,*alTmp2,alTmp3[20],alTmp4[1024],*alTmp5;
+  
+  char alTmpexp[2*iFLDVALUELEN+1];/* add by wangpan 2001/11/29 */
+  
+  int  ilCount,ilRc;
+
+  swVdebug(4,"S1270: [函数调用] swParsepproute()");
+  memset(psSwt_sys_route_d, 0x00, sizeof(struct swt_sys_route));
+  memset(alTmp4,0x00,sizeof(alTmp4));
+
+  _swTrim(aBuf);
+  alTmp5 = strchr(aBuf,' ');
+  if (alTmp5 == NULL) 
+  {
+    swVdebug(0,"S1280: [错误/其它] 路由脚本中行号未定义!");
+    return(-1);
+  }
+  alTmp1 = alTmp5 + 1;
+  *alTmp5 = '\0';
+  psSwt_sys_route_d->route_id = atoi(aBuf); 
+
+  /* 是路由脚本段 */
+  if (atoi(aBuf) > 0)
+  /*  处理路由脚本  */
+  {
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,3);
+    strtoupper(alTmp3);
+
+    /* 是条件执行语句  */  
+    if (strcmp(alTmp3,"IF ") == 0)
+    {
+      alTmp1 = alTmp1 + 3;
+      _swTrim(alTmp1);
+      memset(alTmp4,0x00,sizeof(alTmp4));
+      strcpy(alTmp4,alTmp1);
+      strtoupper(alTmp4);
+      alTmp2 = alTmp1;
+      alTmp5 = strstr(alTmp4," THEN ");
+      if (alTmp5 == NULL) 
+      {
+        swVdebug(0,"S1290: [错误/其它] 路由脚本定义错误(有IF无THEN)!");
+        return(-1);
+      }
+      ilCount = alTmp5 - alTmp4;
+      *alTmp5 = '\0';
+      /*  *(alTmp1 + ilCount) = '\0';  */
+      alTmp1 = alTmp1 + ilCount + 6;
+      _swTrim(alTmp1);
+      _swTrim(alTmp4);
+      strdelpar(alTmp4,strlen(alTmp4));
+      /* swVdebug(0,"S1300:Goto [%s]",alTmp4); */
+      
+      /* add by wangpan  2001/11/29                    */
+      memset(alTmpexp,0x00,sizeof(alTmpexp));
+      ilRc = _swExpN2T(alTmp4,alTmpexp);
+      if(ilRc!=0) return(ilRc);
+      strcpy(psSwt_sys_route_d->route_cond,alTmpexp);
+      /* end add  by 2001/11/29                        */
+      /* strcpy(psSwt_sys_route_d->route_cond,alTmp4); */
+      
+    }
+
+    /* GOTO 语句 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,5);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"GOTO ") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppGOTO;
+      alTmp2 = alTmp1 + 5;
+      _swTrim(alTmp2);
+      /* strcpy(psSwt_sys_route_d->next_id,alTmp2); */
+      psSwt_sys_route_d->next_id = atoi(alTmp2);
+      swVdebug(4,"S1310: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+
+    /*  RETURN 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,6);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"RETURN") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppRETURN;
+      swVdebug(4,"S1320: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+    
+    /*  UNPACK 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,6);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"UNPACK") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppUNPACK;
+      swVdebug(4,"S1330: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+    
+    /*  PACK 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,4);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"PACK") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppPACK;
+      swVdebug(4,"S1340: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }      
+    
+    /*  NEWTRAN 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,7);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"NEWTRAN") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppNEWTRAN;
+      swVdebug(4,"S1350: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+    
+    /*  LOADHEAD 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,8);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"LOADHEAD") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppLOADHEAD;
+      
+      alTmp1=alTmp1+8;
+      _swTrim(alTmp1);    
+      alTmp5 = strchr(alTmp1,'(');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"S1360: [错误/其它] LOADHEAD 语法错误!");
+        return(-1);
+      }
+      alTmp1 = alTmp5 + 1;
+      alTmp5 = strrchr(alTmp1,')');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"S1370: [错误/其它] LOADHEAD 语法错误!");
+        return(-1);
+      }
+      *alTmp5 = '\0';
+      _swTrim(alTmp1);
+           
+      /* add by wangpan  2001/11/29                */
+      memset(alTmpexp,0x00,sizeof(alTmpexp));
+      ilRc = _swExpN2T(alTmp1,alTmpexp);
+      if(ilRc!=0) return(ilRc);
+      strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+      /* end add  by  wangpan 2001/11/29            */
+      /* strcpy(psSwt_sys_route_d->q_target,alTmp1);*/
+      /* delete by wangpan 2001/11/29               */
+      
+      swVdebug(4,"S1380: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+      
+    }
+
+    /*  SAVEHEAD 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,8);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"SAVEHEAD") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppSAVEHEAD;
+      alTmp1=alTmp1+8;
+      _swTrim(alTmp1); 
+      alTmp5 = strchr(alTmp1,'(');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"S1390: [错误/其它] SAVEHEAD 语法错误!");
+        return(-1);
+      }
+      alTmp1 = alTmp5 + 1;
+      alTmp5 = strrchr(alTmp1,')');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"S1400: [错误/其它] SAVEHEAD 语法错误!");
+        return(-1);
+      }
+      *alTmp5 = '\0';
+      _swTrim(alTmp1);
+      
+      /* add by wangpan  2001/11/29                 */
+      memset(alTmpexp,0x00,sizeof(alTmpexp));
+      ilRc = _swExpN2T(alTmp1,alTmpexp);
+      if(ilRc!=0) return(ilRc);
+      strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+      /* end add  by  wangpan 2001/11/29            */ 
+      /*strcpy(psSwt_sys_route_d->q_target,alTmp1); */
+      /* delete by wangpan 20011/11/29              */
+      swVdebug(4,"S1410: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+    
+    /*  REVISE 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,8);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"REVISE") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppREVISE;
+      alTmp1 = alTmp1 + 6;
+      _swTrim(alTmp1);
+      if (*alTmp1 == '\0')
+        strcpy(psSwt_sys_route_d->q_target,"0");
+      else
+      {
+      	/* add by wangpan  2001/11/29                   */
+        memset(alTmpexp,0x00,sizeof(alTmpexp));
+        ilRc = _swExpN2T(alTmp1,alTmpexp);
+        if(ilRc != 0) return(ilRc);
+        strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+        /* end add  by  wangpan 2001/11/29              */
+        /* strcpy(psSwt_sys_route_d->q_target,alTmp1);  */
+        /* delete by wangpan                            */
+        
+        _swTrim(psSwt_sys_route_d->q_target);
+        strdelpar(psSwt_sys_route_d->q_target,
+        strlen(psSwt_sys_route_d->q_target));
+       /* swVdebug(0,"S1420:Send [%s]",psSwt_sys_route_d->q_target); */
+      }
+      swVdebug(4,"S1430: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+    
+    /*  SEND 方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,4);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"SEND") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppSEND;
+      
+      alTmp2 = strchr(alTmp1,'(');
+      alTmp5 = strrchr(alTmp1,')');
+      if(alTmp2==NULL||alTmp5==NULL)
+      {
+        swVdebug(0,"S1440: [错误/其它] SEND 语法错误!");
+        return(-1);
+      }
+      *alTmp5 = '\0';
+      alTmp2 = alTmp2 + 1;   
+      alTmp5 = strchr(alTmp2,',');
+      if(alTmp5==NULL)
+      {
+          _swTrim(alTmp2);
+         strcpy(psSwt_sys_route_d->route_memo,"0");
+         
+         /* add by wangpan  2001/11/29                     */
+         memset(alTmpexp,0x00,sizeof(alTmpexp));
+         ilRc = _swExpN2T(alTmp2,alTmpexp);
+         if(ilRc!=0) return(ilRc);
+         strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+         /* end add  by  wangpan 2001/11/29                */
+         /* strcpy(psSwt_sys_route_d->q_target,alTmp2);    */
+         /* delete by wangpan 2001/11/29                   */
+      }
+      else
+      {  
+         _swTrim(alTmp5+1);
+         /* add by wangpan  2001/11/29                      */
+         memset(alTmpexp,0x00,sizeof(alTmpexp));
+         ilRc = _swExpN2T(alTmp5+1,alTmpexp);
+         if(ilRc!=0) return(ilRc);
+         strcpy(psSwt_sys_route_d->route_memo,alTmpexp);
+         /* end add  by  wangpan 2001/11/29                 */
+         /* strcpy(psSwt_sys_route_d->route_memo,alTmp5+1); */
+         /* delete by wangpan 2001/11/29                    */
+                  
+         *alTmp5 = '\0';
+         _swTrim(alTmp2);
+         /* add by wangpan  2001/11/29                      */
+         memset(alTmpexp,0x00,sizeof(alTmpexp));
+         ilRc = _swExpN2T(alTmp2,alTmpexp);
+         if(ilRc!=0) return(ilRc);
+         strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+         /* end add  by  wangpan 2001/11/29                 */
+         /* strcpy(psSwt_sys_route_d->q_target,alTmp2);     */
+         /* delete by wangpan 2001/11/29                    */
+         
+      }
+      
+      if ((alTmp5=strstr(alTmp1, "WITH")) != NULL) 
+      {
+        if ((alTmp2=strstr(alTmp1, "SAF")) !=NULL)
+        {
+          strcpy(psSwt_sys_route_d->saf_flag, "1");
+        }
+        else
+        {
+          swVdebug(0,"WITCH , SAF 不匹配");
+          return(FAIL);
+        }  
+      }
+      else
+      {
+          strcpy(psSwt_sys_route_d->saf_flag,"0");
+      }
+      swVdebug(4,"S1450: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }  
+        
+    /*  SQL语句 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,4);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"EXEC") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppSQL;
+      alTmp2 = alTmp1 + 4;
+    /*
+      alTmp5 = strchr(alTmp1,'(');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"EXEC 语法错误!");
+        return(-1);
+      }
+      alTmp1 = alTmp5 + 1;
+      alTmp5 = strchr(alTmp1,')');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"EXEC 语法错误!");
+        return(-1);
+      }
+      alTmp2 = alTmp5 + 1; 
+      *alTmp5 = '\0';
+      _swTrim(alTmp1);
+   */  
+      _swTrim(alTmp2);
+      /* psSwt_sys_route_d->next_id = atoi(alTmp1); */
+      
+      /* add by wangpan  2001/11/29                      */
+      memset(alTmpexp,0x00,sizeof(alTmpexp));
+      ilRc = _swExpN2T(alTmp2,alTmpexp);
+      if(ilRc!=0) return(ilRc);
+      strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+      /* end add  by  wangpan 2001/11/29                 */
+      /* strcpy(psSwt_sys_route_d->q_target,alTmp2);     */
+      /* delete by wangpan 2001/11/29                    */
+            
+      swVdebug(4,"S1460: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+   
+
+    /*  CALLSERV语句 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,8);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"CALLSERV") == 0)
+    {
+      psSwt_sys_route_d->oper_flag[0] = cppCALLSERV;
+      alTmp2 = alTmp1 + 8;
+      _swTrim(alTmp2);
+      alTmp5 = strchr(alTmp2,'(');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"S1470: [错误/其它] CALLSERV 语法错误!");
+        return(-1);
+      }
+      alTmp2 = alTmp5 + 1;
+      alTmp5 = strrchr(alTmp2,')');
+      if (alTmp5 == NULL)
+      {
+        swVdebug(0,"S1480: [错误/其它] CALLSERV 语法错误!");
+        return(-1);
+      }
+      *alTmp5 = '\0';
+      _swTrim(alTmp2);
+      
+      /* add by wangpan  2001/11/29                      */
+      memset(alTmpexp,0x00,sizeof(alTmpexp));
+      ilRc = _swExpN2T(alTmp2,alTmpexp);
+      if(ilRc!=0) return(ilRc);
+      strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+      /* end add  by  wangpan 2001/11/29                 */
+      /* strcpy(psSwt_sys_route_d->q_target,alTmp2);     */
+      /* delete by wangpan 2001/11/29                    */
+    
+      swVdebug(4,"S1490: [函数返回] swParsepproute()返回码=0");
+      return (SUCCESS);
+    }
+   
+    /* BEGIN  方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,5);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"BEGIN") == 0)
+    {
+      alTmp2 = alTmp1 + 5;
+      _swTrim(alTmp2);
+      if (strncmp(alTmp2,"WORK",4) == 0 )
+      {
+        psSwt_sys_route_d->oper_flag[0] = cppBEGINWORK;
+        swVdebug(4,"S1500: [函数返回] swParsepproute()返回码=0");
+        return(SUCCESS);
+      }
+      if (strncmp(alTmp2,"CALL",4) == 0 )
+      {
+        psSwt_sys_route_d->oper_flag[0] = cppBEGINCALL;
+        swVdebug(4,"S1510: [函数返回] swParsepproute()返回码=0");
+        return (SUCCESS);  
+      }
+      return(FAIL);
+    }
+   
+     /* COMMIT  方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,6);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"COMMIT") == 0)
+    {
+      alTmp2 = alTmp1 + 6;
+      _swTrim(alTmp2);
+      if (strncmp(alTmp2,"WORK",4) == 0 )
+      {
+        psSwt_sys_route_d->oper_flag[0] = cppCOMMITWORK;
+        swVdebug(4,"S1520: [函数返回] swParsepproute()返回码=0");
+        return(SUCCESS);
+      }
+      if (strncmp(alTmp2,"CALL",4) == 0 )
+      {
+        psSwt_sys_route_d->oper_flag[0] = cppCOMMITCALL;
+        swVdebug(4,"S1530: [函数返回] swParsepproute()返回码=0");
+        return (SUCCESS);
+      }
+      return(FAIL);
+    }
+
+     /* ROLLBACK  方式 */
+    memset(alTmp3,0x00,sizeof(alTmp3));
+    strncpy(alTmp3,alTmp1,8);
+    strtoupper(alTmp3);
+    if (strcmp(alTmp3,"ROLLBACK") == 0)
+    {
+      alTmp2 = alTmp1 + 8;
+      _swTrim(alTmp2);
+      if (strncmp(alTmp2,"WORK",4) == 0 )
+      {
+        psSwt_sys_route_d->oper_flag[0] = cppROLLBACKWORK;
+        swVdebug(4,"S1540: [函数返回] swParsepproute()返回码=0");
+        return(SUCCESS);
+      }
+      if (strncmp(alTmp2,"CALL",4) == 0 )
+      {
+        psSwt_sys_route_d->oper_flag[0] = cppROLLBACKCALL;
+        swVdebug(4,"S1550: [函数返回] swParsepproute()返回码=0");
+        return (SUCCESS);
+      }
+      return(FAIL);
+    }
+ 
+    /* 普通语句 */
+    _swTrim(alTmp1);
+    psSwt_sys_route_d->oper_flag[0] = cppOTHER;
+    
+    /* add by wangpan  2001/11/29                      */
+    memset(alTmpexp,0x00,sizeof(alTmpexp));
+    ilRc = _swExpN2T(alTmp1,alTmpexp);
+    if(ilRc!=0) return(ilRc);
+    strcpy(psSwt_sys_route_d->q_target,alTmpexp);
+    /* end add  by  wangpan 2001/11/29                 */
+    /* strcpy(psSwt_sys_route_d->q_target,alTmp1);     */
+    /* delete by wangpan 2001/11/29                    */
+    
+    swVdebug(4,"S1560: [函数返回] swParsepproute()返回码=0");
+    return(SUCCESS);
+  }
+  return(FAIL);
+}
+
+
+/***************************************************************
+ ** 函数名      : strdelpar
+ ** 功  能      : 去掉字符串两头的括号
+ ** 作  者      :
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+static int strdelpar(char *aBuf,unsigned int iLen)
+{ 
+  swVdebug(4,"S1570: [函数调用] strdelpar(%d)函数",iLen);
+  _swTrim(aBuf);
+  if (aBuf[0] == '(' && aBuf[iLen-1] == ')')
+  {
+    aBuf[0] = ' ';
+    aBuf[iLen-1] = ' ';
+    _swTrim(aBuf);
+  }
+  swVdebug(4,"S1580: [函数返回] strdelpar()返回码=0");
+  return(0);
+}
+
+/***************************************************************
+ ** 函数名      : strtoupper
+ ** 功  能      : 字符串转换为大写
+ ** 作  者      :
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+static int strtoupper(char *aBuf)
+{
+  swVdebug(4,"S1590: [函数调用] strtoupper()");
+  while (*aBuf != '\0')
+  {
+    *aBuf = toupper(*aBuf);
+    aBuf++;
+  }
+  swVdebug(4,"S1600: [函数返回] strtoupper()返回码=0");
+  return(0);
+}
+
+/***************************************************************
+ ** 函数名      : swGetitemmode4
+ ** 功  能      : 读一条记录（用于混合格式存放的配置文件）
+ ** 作  者      : 
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数: 
+ ** 全局变量    :
+ ** 参数含义    : 
+ ** 返回值      : 0:成功 / -1:失败
+***************************************************************/
+static short swGetitemmode4(FILE *fp, int *piSegflag,
+  char paFldname[][iFLDNAMELEN], char paFldvalue[][iFLDVALUELEN], char *aBuf)
+{
+  static int ilNumflag = 0,ilSegflag = 1,ilSegflag_old = 1,ilSegflag2 = 1;
+  char alBuf[iFLDVALUELEN];
+  char *alTmp;
+  short i;
+
+  swVdebug(4,"S1610: [函数调用] swGetitemmode4()");
+  if (ilSegflag != ilSegflag_old)
+    ilSegflag_old = ilSegflag;
+
+  i = 0;
+  while (1)
+  {
+    if (fgets(alBuf, sizeof(alBuf), fp) != NULL)
+    {
+      _swTrim(alBuf);
+      if (strlen(alBuf) == 0 || alBuf[0] == '#') continue;
+      if ((alTmp = strchr(alBuf, '#')) != NULL) *alTmp = '\0';
+      _swTrim(alBuf);
+      if ((alBuf[0] == '[') && (alBuf[strlen(alBuf) - 1] == ']'))
+      {
+        ilSegflag = 1;
+        if (strstr(alBuf, "DATABASE") != NULL)
+          ilSegflag = 2;
+        if (strstr(alBuf, "ALLCASE") != NULL)
+        {
+          ilSegflag = 3;
+          ilSegflag2 = 3;
+        }
+        if (strstr(alBuf, "COMMAPP") != NULL)
+        {
+          ilSegflag = 3;
+          ilSegflag2 = 4;
+        }  
+        if (strstr(alBuf, "CTRLAPP") != NULL)
+        {
+          ilSegflag = 3;
+          ilSegflag2 = 5;
+        }
+        if (strstr(alBuf, "COMMREV") != NULL)
+        {
+          ilSegflag = 3;
+          ilSegflag2 = 6;
+        }
+        if (strstr(alBuf, "CTRLREV") != NULL)
+        {
+          ilSegflag = 3;
+          ilSegflag2 = 7;
+        }
+        if (ilSegflag == 3) ilNumflag ++;
+        if (ilSegflag == 3 && ilNumflag >= 2) continue;
+        if (ilSegflag_old != ilSegflag)
+        {
+          *piSegflag = ilSegflag_old;
+          swVdebug(4,"S1620: [函数返回] swGetitemmode4()返回码=0");
+          return (0);
+        }  
+      }
+      else
+      {
+        if ((ilSegflag == 1)||(ilSegflag == 2))
+        {
+          if ((alTmp = strchr(alBuf, '=')) == NULL) continue;
+          strcpy(paFldvalue[i],alTmp + 1);
+          *alTmp = '\0';
+          strcpy(paFldname[i],alBuf);
+
+          _swChgvalue(paFldvalue[i]);
+          _swChgvalue(paFldname[i]);
+
+          _swTrim(paFldvalue[i]);
+          _swTrim(paFldname[i]);
+          paFldname[i+1][0] = '\0';
+          i ++;
+        }
+        else if (ilSegflag == 3)
+        {
+          strcpy(aBuf,alBuf);
+          *piSegflag = ilSegflag2;
+          swVdebug(4,"S1630: [函数返回] swGetitemmode4()返回码=0");
+          return 0;
+        }
+        else
+          return -1;
+      } 
+    }
+    else
+      break;
+  }
+  return (-1);
+}  

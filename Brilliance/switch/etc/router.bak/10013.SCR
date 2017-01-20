@@ -1,0 +1,17 @@
+ROUTEDESC=Ô¤Ô¼È¡¿î                                   
+[ROUTE]                                              
+                                                     
+20 IF SEQ(PTPORTGET(100,1),0) THEN GOTO 800          
+30 CALL 100 WITH REVMODE 1                           
+40 IF SEQ(PTPORTGET(101,1),0) THEN GOTO 800          
+50 CALL 101 WITH REVMODE 1                           
+60 IF SEQ(PTPORTGET(102,1),0) THEN GOTO 800          
+70 CALL 102 WITH REVMODE 1                           
+80 IF SEQ(PTPORTGET(103,1),0) THEN GOTO 800          
+90 CALL 103 WITH REVMODE 1                           
+                                                     
+                                                     
+400 SEND MSGHEAD(iBegin_q_id) WITH END               
+800 SET retcode = 20009997                           
+810 SEND MSGHEAD(iBegin_q_id) WITH END, GROUP 23999  
+

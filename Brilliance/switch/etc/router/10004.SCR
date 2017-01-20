@@ -1,0 +1,10 @@
+ROUTEDESC=手机号转账交易                    
+[ROUTE]                                     
+                                            
+20 IF SEQ(PTPORTGET(102,1),0) THEN GOTO 800 
+30 CALL 102 WITH REVMODE 1                  
+                                            
+400 SEND 25 WITH END                        
+800 SET retcode = 20009997                  
+810 SEND 25 WITH END, GROUP 23999           
+

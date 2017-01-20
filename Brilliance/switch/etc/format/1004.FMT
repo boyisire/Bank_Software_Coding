@@ -1,0 +1,15 @@
+FMTDESC=根据别名查询客户号-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+20 SET trancode = GETVALUE(/root/pub/trancode)
+30 SET CXFS = 4
+40 SET QDDLBM = GETVALUE(/root/pri/QDDLBM)
+50 SET PCODE = GETVALUE(/root/pub/trancode)
+60 SET QDLX = IF(SEQ(LEN(TRIM(GETVALUE(/root/pri/tranchannel))),0),GETVALUE(/root/pri/CZDZQDBS),GETVALUE(/root/pri/tranchannel))
+70 SET VALUE    = MOD(HASH(SAD(GETVALUE(/root/pri/tranchannel),GETVALUE(/root/pri/QDDLBM))),1024)
+
+1000 DO XMLFREE()

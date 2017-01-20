@@ -1,0 +1,3 @@
+ROUTEDESC=第三方存管系统交易端口
+[ROUTE]
+10 SEND 82 WITH END

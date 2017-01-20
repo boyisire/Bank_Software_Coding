@@ -1,0 +1,6 @@
+ROUTEDESC=网银第三方支付(新支付平台)文件通知转发前端路由;
+[ROUTE]
+10 SET direction=1
+11 IF SEQ(FML(channel),10) THEN GOTO 21
+20 SEND 271 WITH END
+21 SEND 76 WITH END

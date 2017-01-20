@@ -1,0 +1,1229 @@
+/****************************************************************/
+/* 模块编号    ：SYSMON                                         */ 
+/* 模块名称    ：系统监控                                       */
+/* 版 本 号    ：V4.3.0                                         */
+/* 作    者    ：                                               */
+/* 建立日期    ：1999/11/22                                     */
+/* 最后修改日期：2001/8/30                                      */
+/* 模块用途    ：事件管理器                                     */
+/* 本模块中包含如下函数及功能说明：                             */
+/*                         （1） void main();                   */
+/*                         （2） void swQuit();                 */
+/*                         （3） int swLoadmsgpack();        	*/
+/*                         （4） int swLoadttytype();           */
+/*                         （5） int swMakebuffer();            */
+/*                         （8） int swClschild();              */
+/*                         （9） int swSendwin();               */
+/****************************************************************/
+
+/****************************************************************/
+/* 修改记录：                                                   */
+/*   1999/12/21 增加了记录事件日志                              */
+/*   1999/12/22 修改了信息输出方式的处理                        */
+/*   2000/1/29  根据中信二期的设计进行修改                      */
+/*   2000/8/24  优化                                            */
+/*   2001/1/22  Oracle移植                                      */
+/*   2001/3/24  封版V3.01,程序共968行                           */
+/*   2001/4/3   DB2移植(972)                                    */
+/*   2001/4/6   INFORMIX移植(974)                               */
+/*   2001/06/29 改数据库操作为配置表操作                        */
+/*   2001/7/30  根据江苏建行实现多点监控                        */
+/*   2001/8/2   改为脱离邮箱(1371)                              */
+/****************************************************************/
+
+/* 头文件定义 */
+#include  "switch.h"
+#include  <curses.h> 
+#include  "swNdbstruct.h"
+#include  "swShm.h"
+EXEC SQL INCLUDE sqlca;
+/* 常量定义 */
+#define FILLER       ";"              /* 分隔符 */
+#define FILLERLEN    1                /* 分隔符长度 */
+#define SENDMAX      100              /* 发送前台最大个数 */
+
+/* 变量定义 */
+static short igCount_msgtype;               /* 报文类型计数器 */
+static short igCount_msgfile;               /* 报文类型计数器 */
+static int   igSock;
+
+/* 结构定义 */
+struct swt_sys_msgpack *wsgSwt_sys_msgpack,*psgSwt_sys_msgpack; 
+struct swt_sys_ttytype *psgSwt_sys_ttytype;
+
+/* 发送WINDOWS前台结构 */
+struct swt_sys_win
+{
+  int   usrflag;
+  char  address[16];
+  int   port;
+  short Msg_id;
+  long  iNum_id;         /*报文发送次数计数器*/
+  long  iEcho_id;        /*响应报文次数计数器*/
+}psgSendwin[SENDMAX];
+
+/* 端口配置结构 */
+struct swt_sys_port
+{
+  char  address[16];
+  long  port;
+}sgSwt_sys_port;
+
+FILE **fgPack;                /* 监控信息记录文件 */
+FILE *fgWin;                  /* 前台签到信息记录文件 */
+
+/* 函数原型说明 */
+void swQuit( int sig );
+void swClschild( );
+int  swLoadsysttytype(short *iTerm_num );
+int  swLoadmsgpack( );
+int  swMakebuffer(short iMsg_type,char * aBuffer);
+int  swLoadmsgpack1( short cMsgtype,int *iCount);
+int  swSendwin(int iSock,char *aAddr,short iPort,char *aMsgpack,unsigned int iMsglen);
+int  swGetField(char *aBuffer,int n,char *aField,char Seperator);
+extern int _swExpN2T(char *aNstr,char *aTstr);
+int swFwrite(char *aBuf,short iType);
+int swFwinr();
+int swFwinw();
+
+/**************************************************************
+ ** 函数名      ： main
+ ** 功  能      ： 主函数
+ ** 作  者      ： nh
+ ** 建立日期    ： 1999/11/22
+ ** 最后修改日期： 2001/9/24
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ： 无
+***************************************************************/
+
+int main(int argc,char *argv[])
+{
+  struct msgpack slMsgpack;                /* 报文 */
+  struct msghead *pslMsghead;              /* 报文头 */
+  unsigned int ilMsglen;                          /* 报文长度 */
+  short ilCount_tty_type;                  /* 终端个数计数器 */
+  short i,j;                             /* 循环变量 */
+  short ilRc;                              /* 返回码 */
+  short ilSendFlag;                        /* 发送前台的标志 */
+  char  alSendBuffer[1024];                /* 发送前台内容 */
+  char  alResult[iFLDVALUELEN];            /* 计算的结果 */
+  long  llCode;                            /* 信息码或命令码 */
+  short ilResultlen;
+  char  *alMsgbody;                        /* 指向报文体指针 */
+  char  alMsg_id[4],alIpadd[16],alPort[5],alPort1[5]; /* 从报文体中取出的内容 */
+  short ilWinflag;
+  int   ilSize;
+  char  alAddr[16];                     
+  int   ilPort;
+  long  ilMsg_num;               /* 发送报文的最大笔数 */
+  long  ilEcho_num;              /* 接收到的响应报文最大数 */
+  short ilFileflag=0;              /* 报文计入文件的标志 1:计文件*/
+  char  alFiletmp[1024];          /* 计报文的文件名 */
+  
+  /* 处理信号 */
+  signal(SIGCLD,SIG_IGN);
+  signal(SIGINT,SIG_IGN);
+  signal(SIGQUIT,SIG_IGN);
+  signal(SIGHUP,SIG_IGN);
+  signal(SIGTSTP,SIG_IGN);
+  signal(SIGTTOU,SIG_IGN);
+
+  /* 取得版本号 */
+  if(argc >= 3)
+    _swVersion("swSysmon Version 4.3.0",argv[1]);
+
+  /* LICENSE */
+  if (_swLicense("swSysmon")) exit(FAIL);
+
+  /* 设置调试程序名称 */
+  strcpy(agDebugfile,"swSysmon.debug");
+
+  /* 取得DEBUG标志 */
+  if((cgDebug = _swDebugflag("swSysmon")) == FAIL)
+  {
+    fprintf(stderr,"取DEBUG标志失败!\n");
+    exit(FAIL);
+  } 
+  swVdebug(2,"S0010: 取得debug标记.cgDebug = %d",cgDebug);
+
+  if(argc > 1)
+  {
+    if(!strcmp(argv[1],"1"))
+      ilFileflag = 1;
+  }
+
+  /*add by gxz 2003.1.7*/  
+  /* 打开数据库 */
+  if(swDbopen() != SUCCESS)
+  {
+    swVdebug(0,"S0040: [错误/数据库] swDbopen()打开数据库出错");
+    exit(FAIL);
+  }
+  swVdebug(2,"S0050: 打开数据库成功");
+  
+  ilRc = swShmcheck(); /* 初始化共享内存指针 */
+  if (ilRc != SUCCESS)
+  {
+    printf("没有启动共享内存,请通过swInit启动...\n");
+    swVdebug(0,"S0020: [错误/共享内存] 初始化共享内存指针失败");
+    exit(FAIL);
+  }
+  swVdebug(2,"S0030: 初始化共享内存成功");
+  
+  /* 预读终端配置表 */
+  swVdebug(2,"S0040: 开始读终端配置表");
+
+  ilRc = swLoadsysttytype(&ilCount_tty_type);
+  if (ilRc)
+  {
+    swVdebug(0,"S0050: [错误/其它] 预读终端配置表出错");
+    exit(-1);
+  }
+  
+  igCount_msgfile = ilCount_tty_type;
+  /* 预读报文组织 */
+  ilRc = swLoadmsgpack();
+  if (ilRc)
+  {
+    swVdebug(1,"S0060: [错误/其它] 预读报文组织出错,错误码为:%d", ilRc);
+    exit(FAIL);
+  }
+  if(ilFileflag == 1)
+  {
+    fgPack=(FILE **)malloc(igCount_msgfile * sizeof(FILE *));
+    swVdebug(3,"S0070: 写入文件个数file count=%d",igCount_msgfile);
+    for(i = 0;i < igCount_msgfile;i ++)
+    {
+      memset(alFiletmp,0x00,sizeof(alFiletmp));
+      sprintf(alFiletmp,"%s/monlog/%s_%d.log",getenv("SWITCH_MON_PATH"),
+        psgSwt_sys_ttytype[i].discrib,psgSwt_sys_ttytype[i].Term_id);
+      if((fgPack[i]=fopen(alFiletmp,"a+")) == NULL)
+      {
+        swVdebug(1,"S0080: [错误/系统调用] fopen()函数,errno=%d[%s],文件[%s]打开出错",errno,strerror(errno),alFiletmp);
+        fclose(fgPack[i]);
+        exit(-1);
+      }
+      swVdebug(2,"S0090: 打开文件[%s]成功",alFiletmp);
+    }
+  }
+  
+  /*从共享内存中读取服务端口配置*/
+  ilRc = swShmselect_swt_sys_config(&sgSwt_sys_config);
+  if (ilRc)
+  {
+    swVdebug(1,"S0070 [错误/共享内存] 读取共享内存中端口出错");
+    exit(FAIL);
+  }
+  
+  swVdebug(2,"S0100: 读取系统配置信息成功"); 
+  /* 计数器初始化 */
+  strcpy(sgSwt_sys_port.address,sgSwt_sys_config.sysmonaddr);
+  sgSwt_sys_port.port = sgSwt_sys_config.sysmonport;
+
+  ilMsg_num = sgSwt_sys_config.msg_num;
+  ilEcho_num = sgSwt_sys_config.echotest_num;
+
+  /* 初始化前台标志及报文发送次数 */
+  for(i=0;i<SENDMAX;i++)
+  {
+    psgSendwin[i].usrflag = 0;
+    psgSendwin[i].iNum_id = 0;
+    psgSendwin[i].iEcho_id = 0;
+  }
+  ilRc=swFwinr();
+  if(ilRc)
+  {
+    swVdebug(1,"S0110: swFwinr() error");
+    exit(-1);
+  }
+
+  /* 创建UDP */
+swVdebug(1,"port=%d",sgSwt_sys_port.port);
+  igSock = _swUDPCreate(sgSwt_sys_port.port);
+  if(igSock < 0)
+  {
+    swVdebug(1,"S0120: 函数调用_swUDPCreate(),返回码=%d,创建socket出错[%d][%s]",igSock,errno,strerror(errno));
+    swVdebug(2,"S0130: 端口号[%d],创建socket出错[%d][%s]",sgSwt_sys_port.port,errno,strerror(errno));
+    exit(-1);
+  }
+  swVdebug(2,"S0140: 创建socket成功,sock = %d",igSock);
+  
+  signal(SIGTERM,swClschild); 
+
+  swVdebug(2,"S0150: 数据初始化");
+  /* 数据初始化 */
+  ilSendFlag = 1;
+  pslMsghead = (struct msghead *)&slMsgpack;
+  
+  /*swVdebug(1,"S0160: 循环接收并处理监控报文...");*/
+  
+  while(TRUE) 
+  {       
+    ilMsglen = iMSGMAXLEN;  
+    ilSize=sizeof(struct sockaddr_in);
+    memset(alAddr,0x00,sizeof(alAddr));                     
+    ilPort=0;
+
+    swVdebug(2,"S0170: 开始读取信息");
+  
+    /* 通过UDP读取报文 */
+    ilRc=_swUDPGet(igSock,(char *)alAddr,(int *)&ilPort,(char *)&slMsgpack,\
+         &ilMsglen);
+    swVdebug(2,"S0180: alAddr=%s ilPort=%d",alAddr,ilPort);
+    if (ilRc!=0)
+    {
+      swVdebug(1,"S0190: [错误/函数调用] _swUDPGet()函数,错误码=%d,读取信息失败",ilRc);
+      swMberror(ilRc,(char *)&slMsgpack);
+      swQuit(igSock);
+    }
+
+    if (cgDebug >= 2)
+      swDebughex((char *)&slMsgpack,
+        sizeof(struct msghead) + slMsgpack.sMsghead.iBodylen);
+    swVdebug(2,"S0200: 读取信息成功");
+   
+    psgMsghead = &(slMsgpack.sMsghead); 
+    llCode = pslMsghead->lCode;
+    swVdebug(2,"S0210: switch(pslMsghead->iMsgtype=%d)",pslMsghead->iMsgtype);
+    
+    switch(pslMsghead->iMsgtype)
+    {
+      case iMSGMESSAGE:
+        swVdebug(2,"S0220: case 信息报文");
+        if(ilSendFlag == 1)
+        {
+          swVdebug(2,"S0230: if(发送前台的标志==1)");
+          
+          if(slMsgpack.sMsghead.iBodylen >= 0)
+          {
+            ilRc = swFmlunpack(slMsgpack.aMsgbody,
+              slMsgpack.sMsghead.iBodylen,psgPreunpackbuf);
+            if(ilRc != SUCCESS)
+            {
+              swVdebug(1,"S0240: [错误/函数调用] swFmlunpack()函数,返回码=%d",ilRc);
+              continue;
+            }
+            swVdebug(2,"S0250: swFmlunpack success");
+          }
+          else continue;
+          
+          memset(alSendBuffer,0x00,sizeof(alSendBuffer));
+          memset(alResult,0x0,sizeof(alResult)); 
+          
+          for ( i=0;i< ilCount_tty_type;i++)
+          {
+            /* 置发送前台的标志 */
+            ilWinflag = 0;
+            for( j=0;j<SENDMAX; j++)
+            { 
+              if((psgSendwin[j].usrflag == 1)&&(psgSendwin[j].Msg_id == 
+                 psgSwt_sys_ttytype[i].Term_id))
+              {
+                ilWinflag = 1;
+                break;
+              }
+            }
+            /* 组织报文并且发送给前台 */
+            if(ilWinflag==1)
+            { 
+              ilRc = _swExpress(psgSwt_sys_ttytype[i].lexpress,\
+                alResult,&ilResultlen);  
+              if(ilRc != SUCCESS)
+              {
+                swVdebug(2,"S0260: 计算终端上平台表达式出错");
+                continue;
+              }
+              swVdebug(2,"S0270: 计算平台表达式成功,result=[%s]",alResult);
+              
+              if (alResult[0] == '1') 
+              {
+                swVdebug(2,"S0280: 平台表达式计算结果为真");
+              
+                ilRc=swMakebuffer(psgSwt_sys_ttytype[i].Term_id,alSendBuffer);
+                if(ilRc)
+                {
+                  swVdebug(1,"S0290: [错误/函数调用] swMakebuffer()函数,返回码=%d,组织报文出错",ilRc);
+                  swQuit(igSock);
+                }
+                if (strlen(alSendBuffer)==0)
+                {
+                  swVdebug(1,"S0300: [错误/其它] 要显示报文内容为空");
+                  continue;
+                } 
+                if(ilFileflag == 1)
+                {
+                 swVdebug(2,"S0310: 写入文件的type=[%d,%d],len=[%d],buf=[%s]",i,
+                    psgSwt_sys_ttytype[i].Term_id,strlen(alSendBuffer),
+                    alSendBuffer);
+                  ilRc = swFwrite(alSendBuffer,i); 
+                  if(ilRc)
+                    swVdebug(1,"S0320: swFwrite()将流水信息写入文件失败!");
+                  swVdebug(3,"S0330: swFwrite()将流水信息写入文件成功!");
+                }
+                /* 发送信息报文到前台监控模块 */                
+                for( j=0;j<SENDMAX; j++)
+                {
+                  if((psgSendwin[j].usrflag == 1)&&(psgSendwin[j].Msg_id ==
+                     psgSwt_sys_ttytype[i].Term_id))
+                  {
+                    ilRc = swSendwin(igSock,psgSendwin[j].address,\
+                      psgSendwin[j].port,alSendBuffer,strlen(alSendBuffer));
+	            if(ilRc)
+                      swVdebug(1,"S0340: [错误/其它] 发送前台失败");
+                    else
+                    {
+                      swVdebug(2,"S0350: 发送前台成功IP=[%s] PORT=[%d]",psgSendwin[j].address,psgSendwin[j].port);
+                      swVdebug(3,"S0360: 发送前台内容为Sendbuf=%s",alSendBuffer);
+                    }
+	            
+	            if(psgSendwin[j].iNum_id < ilMsg_num)
+	            {
+	              psgSendwin[j].iNum_id ++;
+	            }
+	            else 
+                    {
+                      if (psgSendwin[j].iEcho_id < ilEcho_num)
+	              {  
+	                _swUDPPut(igSock,psgSendwin[j].address,psgSendwin[j].port,"alive",5);
+                        swVdebug(2,"S0370: 发送alive到IP=[%s] PORT=[%d]成功",psgSendwin[j].address,psgSendwin[j].port);
+	                psgSendwin[j].iEcho_id++;
+                      }
+	              else
+                      {
+                        swVdebug(1,"S0380: [警告!!!] IP=[%s] PORT=[%d] \
+                          的前台异常中断,请检查!",psgSendwin[j].address, \
+                          psgSendwin[j].port);
+	                psgSendwin[j].usrflag = 0;
+                        psgSendwin[j].iNum_id = 0;
+                        psgSendwin[j].iEcho_id = 0;
+                        ilRc=swFwinw();
+                        if(ilRc)
+                          swVdebug(1,"S0390: swFwinw()保存签到信息失败!");
+                        swVdebug(3,"S0400: swFwinw()保存签到信息成功");
+                      }
+                    }
+                  }
+                } /* end for */
+              }
+            } /* end if */
+          } /* end for */
+        } /*end if(ilSendFlag==1)*/  
+        
+        swVdebug(2,"S0410: END case 信息报文");
+        break;
+/*    保留      
+      case iMSGORDER:
+
+         * 发送到SYSCOM *
+        swVdebug(2,"S0420: case 命令报文");
+        
+        ilRc = sendto(igSock,(char *)&slMsgpack,sizeof(struct msgpack),0,
+          (struct sockaddr *)&sSock,ilSize);
+        if(ilRc)
+        { 
+          swVdebug(1,"S0430: [错误/系统调用] sendto()函数,errno=%d[%s]",errno,strerror(errno));
+          swMberror(ilRc,(char *)&slMsgpack);
+          continue;
+        }
+        
+        swVdebug(2,"S0440: switch(信息码/命令码)");
+        
+        switch(llCode)
+        {
+          case 9901:  * 自杀 *
+            swVdebug(2,"S0450: case 9901:自杀");
+            exit(15);
+            break;
+
+          case 601:  * 即时冲正 *
+            swVdebug(2,"S0460: case 601:即时冲正");
+            _swOrdsend(601,(char *)&slMsgpack,iMBMONREV);
+            break;
+
+          case 602:  * 停止冲正报文 *
+            swVdebug(2,"S0470: case 602:停止冲正报文");
+            _swOrdsend(602,(char *)&slMsgpack,iMBMONREV);
+            break;
+
+          case 902:  * 前台登录 *
+            ilSendFlag = 1;
+            swVdebug(2,"S0480: Login成功");
+            break;
+
+          case 903:  * 前台退出 *
+            ilSendFlag = 0;
+            swVdebug(2,"S0490: Logout成功");
+            break;
+
+          default:
+            break;
+        }
+        break;
+*/
+      case iMSGWINDOW : 
+        
+        swVdebug(2,"S0500: case 前台报文");
+
+        if(pslMsghead->iBodylen < 29)
+        {
+          swVdebug(1,"S0510: [错误/其它] 无效报文");
+          break;
+        }
+        swVdebug(2,"S0520: iBodylen=%d",pslMsghead->iBodylen); 
+        /* alMsgbody = (char *)&slMsgpack + sizeof(struct msghead); */
+        alMsgbody = (char *)slMsgpack.aMsgbody;
+
+        /* 从报文体中取出报文类型ID */ 
+        memcpy(alMsg_id,alMsgbody+1,3);
+        alMsg_id[3]='\0'; 
+        _swTrim(alMsg_id);
+        
+        /* 从报文体中取出IP地址 */ 
+        memcpy(alIpadd,alMsgbody+4,15);
+        alIpadd[15]='\0'; 
+        _swTrim(alIpadd);
+        
+        /* 从报文体中取出发送端口号 */ 
+        memcpy(alPort,alMsgbody+19,5);
+        alPort[5]='\0'; 
+        _swTrim(alPort);
+        
+        /* 从报文体中取出端口号 */ 
+        memcpy(alPort1,alMsgbody+24,5);
+        alPort1[5]='\0'; 
+        _swTrim(alPort1);
+
+        swVdebug(2,"S0530: Msg_id=%s,IP Address=%s,UDP Port=%s,SEND Port=%s",
+          alMsg_id,alIpadd,alPort,alPort1);
+
+        if(alMsgbody[0] == 'A') /*签到报文*/
+        {
+          swVdebug(2,"S0540: 签到报文,IP=[%s] PORT=[%s]",alIpadd,alPort1);
+        
+          for(i=0;i<SENDMAX;i++)
+          {
+            
+            if(( psgSendwin[i].usrflag == 1)&&
+              ( strcmp(psgSendwin[i].address,alIpadd) ==0)&&
+              ( psgSendwin[i].port == atoi(alPort1)))
+            {
+              /* 切换报文重置报文类型 */
+              psgSendwin[i].Msg_id = atoi(alMsg_id);
+              break;
+            } 
+        
+            else if( psgSendwin[i].usrflag == 0)
+            {
+              strcpy(psgSendwin[i].address ,alIpadd);
+              psgSendwin[i].port = atoi(alPort);
+              psgSendwin[i].Msg_id = atoi(alMsg_id);
+              psgSendwin[i].usrflag = 1; 
+              psgSendwin[i].iNum_id = 0;
+              psgSendwin[i].iEcho_id = 0; 
+
+              ilRc=swFwinw();
+              if(ilRc)
+                swVdebug(1,"S0550: swFwinw()保存签到信息失败!");
+              swVdebug(3,"S0560: swFwinw()保存签到信息成功");
+              break;
+            }
+          }
+          
+          if(i == SENDMAX)
+          {
+            _swUDPPut(igSock,alIpadd,atoi(alPort),"fail",4);
+            swVdebug(1,"S0570: [错误/其它] 签到数达到最大,IP=[%s] PORT=[%s]",alIpadd,alPort);
+          }
+          
+          else
+          {
+            ilRc=_swUDPPut(igSock,alIpadd,atoi(alPort),"success",7);
+            swVdebug(2,"S0580: 签到成功,ip=[%s] port=[%s]",alIpadd,alPort);
+          }
+          
+          continue;
+        }
+        
+        else if(alMsgbody[0] == 'B') /*签退报文*/
+        {
+          swVdebug(2,"S0590: 签退报文,IP=[%s] PORT=[%s]",alIpadd,alPort1);
+        
+          for(i=0;i<SENDMAX;i++)
+          {
+            if(( psgSendwin[i].usrflag == 1)&&
+              ( strcmp(psgSendwin[i].address,alIpadd) ==0)&&
+              ( psgSendwin[i].port == atoi(alPort1))&&
+              ( psgSendwin[i].Msg_id == atoi(alMsg_id)))
+            {
+              psgSendwin[i].usrflag = 0; 
+              psgSendwin[i].iNum_id = 0;
+              psgSendwin[i].iEcho_id = 0;
+              for (j=SENDMAX;j>=0;j--)
+              {
+                if (psgSendwin[j].usrflag == 1)
+                {
+                  memcpy((char *)&psgSendwin[i],(char *)&psgSendwin[j],
+                    sizeof(struct swt_sys_win));
+                  psgSendwin[j].usrflag = 0;
+                  break;
+                }
+              }
+              break;
+            }
+          }
+        
+          ilRc=swFwinw();
+          if(ilRc)
+            swVdebug(1,"S0600: swFwinw()保存签到信息失败!");
+          swVdebug(3,"S0610: swFwinw()保存签到信息成功");
+
+          _swUDPPut(igSock,alIpadd,atoi(alPort),"success",7);
+          swVdebug(2,"S0620: 签退成功,ip=[%s] port=[%s]",alIpadd,alPort);
+        
+          continue;
+        }
+        else
+          break;
+      
+      case iMSGRETURN :
+      
+        if(pslMsghead->iBodylen < 19)
+        {
+          swVdebug(1,"S0630: [错误/其它] 无效报文");
+          break;
+        }
+        swVdebug(2,"S0640: iBodylen=%d",pslMsghead->iBodylen);
+        alMsgbody = (char *)slMsgpack.aMsgbody;
+
+        /* 从报文体中取出IP地址 */
+        memcpy(alIpadd,alMsgbody,15);
+        alIpadd[15]='\0';
+        _swTrim(alIpadd);
+
+        /* 从报文体中取出发送端口号 */
+        memcpy(alPort,alMsgbody+15,5);
+        alPort[5]='\0';
+        _swTrim(alPort);
+
+        swVdebug(2,"S0650: case 响应报文,IP=[%s] PORT=[%s]",alIpadd,alPort);
+        for(i=0;i<SENDMAX;i++)
+        {
+          if(( psgSendwin[i].usrflag == 1)&&
+              ( strcmp(psgSendwin[i].address,alIpadd) ==0)&&
+              ( psgSendwin[i].port == atoi(alPort)))
+          {
+            psgSendwin[i].iNum_id = 0;
+            psgSendwin[i].iEcho_id = 0;
+            swVdebug(2,"收到响应报文，初始化报文计数器成功ip=%s port=%s",alIpadd,alPort);
+          }
+        }
+      default:
+        swVdebug(2,"S0660: END switch");
+        break;
+    }           
+    
+    swVdebug(2,"S0670: END switch");
+ 
+  } /* end of while */
+}               
+
+/**************************************************************
+ ** 函数名      ： swQuit
+ ** 功  能      ： 信号处理函数
+ ** 作  者      ：  
+ ** 建立日期    ： 1999/11/19
+ ** 最后修改日期： 1999/12/22
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ： 无
+***************************************************************/
+
+void swQuit(int sig)
+{
+  int i,ilRc;
+  signal(SIGTERM,SIG_IGN);
+  /*printf("===================系统监控进程已经关闭===================\n");*/
+
+  swVdebug(2,"S0680: | system monitor stopped,signal is %d",sig);
+
+  for( i=0;i<SENDMAX; i++)
+  {
+    if(psgSendwin[i].usrflag == 1)
+    {
+      ilRc=swSendwin(igSock,psgSendwin[i].address,psgSendwin[i].port,"QUIT",4);
+      if(ilRc)
+        swVdebug(1,"S0690: [错误/其它] 发送前台失败");
+      else
+      {
+        swVdebug(2,"S0700: 发送前台成功IP=[%s] PORT=[%d]",psgSendwin[i].address,psgSendwin[i].port);
+      }
+    }
+  }
+  for(i = 0; i < igCount_msgfile; i++)
+    fclose(fgPack[i]);
+
+  fclose(fgWin);
+  
+  /* 关闭数据库连接 */
+  /*add by gxz 2003.1.7*/
+  swDbclose();
+
+  swVdebug(1,"S0710: | [swSysmon]已经关闭!");
+  close(sig);
+  exit(sig);
+}  
+
+/**************************************************************
+ ** 函数名      ：swMakebuffer
+ ** 功  能      ：组织交易流水报文
+ ** 作  者      ：nh
+ ** 建立日期    ：2000/2/22
+ ** 最后修改日期：2000/2/22
+ ** 调用其它函数：
+ ** 全局变量    ：wsgSwt_sys_msgpack
+ ** 参数含义    ：msgpack 报文
+ **               buffer  组织好的报文 
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swMakebuffer(short iMsg_type,char * aBuffer)
+{
+  int   i,j=0;
+  char  alTmpBuffer1[100];
+  char  alTmpBuffer[200];
+  short ilLen;
+  char  *alPointer;
+  char  *alTmp;
+  
+  swVdebug(4,"S0720: [函数调用] swMakebuffer(%d)",iMsg_type);
+
+  alPointer = aBuffer;
+  for (i=0;i<igCount_msgtype;i++)
+  {
+    alTmp = alTmpBuffer;
+    if(wsgSwt_sys_msgpack[i].msg_type == iMsg_type)
+    {
+      if(_swExpress( wsgSwt_sys_msgpack[i].fld_express,\
+        alTmpBuffer1, &ilLen) ==SUCCESS) 
+      {
+        for(j=0;alTmpBuffer1[j] != '\0';j++)
+        {
+          if(( alTmpBuffer1[j] == ';' )||( alTmpBuffer1[j] == '^'))
+          { 
+            *alTmp = '^';
+            alTmp++;
+            ilLen++;
+          }
+
+          *alTmp = alTmpBuffer1[j];
+          alTmp++;
+        }
+
+        *alTmp = '\0';
+        swVdebug(3,"S0730:"\
+          "swMakeBuffer():swExpress,return = %s ilLen = %d",alTmpBuffer,ilLen);
+      }
+      else
+      {
+      	swVdebug(1,"S0740: [错误/函数调用] _swExpress()函数,返回码=-1");
+        /* next add by nh 2002.3.20 */
+        strcpy(alTmpBuffer," ");
+        ilLen = 3;
+        swVdebug(3,"S0750:"\
+          "swMakeBuffer():swExpress,return = %s ilLen = %d",alTmpBuffer,ilLen);
+        /* end add by nh */
+/*        return(FAIL);*/
+      }
+
+      memcpy(alPointer, alTmpBuffer, ilLen);
+      alPointer += ilLen;
+      memcpy(alPointer, FILLER, FILLERLEN);
+      alPointer += FILLERLEN;
+    }
+  }
+
+  *alPointer = '\0';
+  swVdebug(2,"S0760: 组织报文成功");
+
+  swVdebug(4,"S0770: [函数返回] swMakebuffer()返回码=0");
+  return(SUCCESS);
+}
+
+void swClschild()
+{
+  swVdebug(1,"S0780: | [swSysmon]已经关闭!");
+
+  swQuit(igSock);
+}
+
+
+/**************************************************************
+ ** 函数名      ：swLoadsysttytype
+ ** 功  能      ：预读终端配置表
+ ** 作  者      ：
+ ** 建立日期    ：
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：psgSwt_sys_ttytype
+ ** 参数含义    ：无
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swLoadsysttytype(short *iTerm_num)
+{
+  FILE *fp;
+  int  i=0;
+  short ilRc;
+  char palFldvalue[10][iFLDVALUELEN];
+  char alTmpexp[2 * iFLDVALUELEN + 1];  /* add by zjj 2001.11.29  */
+  
+  swVdebug(4,"S0790: [函数调用] swLoadsysttytype()");
+
+  /* 预读终端配置文件　*/
+  if ((fp = _swFopen("config/SWMONTERM.CFG","r")) == NULL)
+  {
+    swVdebug(1,"S0800: [错误/系统调用] fopen()函数,errno=%d[%s], swt_sys_ttytype文件打开出错",errno,strerror(errno));
+    fclose(fp);
+    return(-1);
+  }
+  
+  while ((ilRc = _swGetitemmode2(fp, palFldvalue,11)) == 0)
+  {
+    i++;
+  
+    sgSwt_sys_ttytype.Term_id = atoi(palFldvalue[0]);
+    strcpy(sgSwt_sys_ttytype.discrib,palFldvalue[1]);
+    strcpy(sgSwt_sys_ttytype.message,palFldvalue[2]);
+    
+    ilRc = _swExpN2T(palFldvalue[3],alTmpexp);
+    if (ilRc != SUCCESS) return(ilRc);
+    strcpy(sgSwt_sys_ttytype.lexpress,alTmpexp);
+
+     
+    _swTrim(sgSwt_sys_ttytype.discrib);
+    _swTrim(sgSwt_sys_ttytype.message);
+    _swTrim(sgSwt_sys_ttytype.lexpress);
+    
+    psgSwt_sys_ttytype = (struct swt_sys_ttytype *)realloc(psgSwt_sys_ttytype,
+      i * sizeof(struct swt_sys_ttytype));
+
+    memcpy((char *)&(psgSwt_sys_ttytype[i-1]),(char *)&sgSwt_sys_ttytype,
+      sizeof(struct swt_sys_ttytype));
+  
+    swVdebug(3,"S0670 | %d,%s,%s,%s",
+      	   psgSwt_sys_ttytype[i-1].Term_id,
+           psgSwt_sys_ttytype[i-1].discrib,
+           psgSwt_sys_ttytype[i-1].message,
+           psgSwt_sys_ttytype[i-1].lexpress);
+  }
+  
+  *iTerm_num = i;
+  fclose(fp);
+  swVdebug(2,"S0810: 读终端配置表成功");
+  
+  swVdebug(4,"S0820: [函数返回] swLoadsysttytype()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      ：swLoadmsgpack()
+ ** 功  能      ：预读终端配置表
+ ** 作  者      ：
+ ** 建立日期    ：
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：psgSwt_sys_msgpack
+ ** 参数含义    ：无
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swLoadmsgpack()
+{
+  FILE *fp;
+  int  i;
+  short ilRc;
+  char palFldvalue[10][iFLDVALUELEN];
+  char alTmpexp[2 * iFLDVALUELEN + 1]; /* add by zjj 2001.11.29 */
+  
+  swVdebug(4,"S0830: [函数调用] swLoadmsgpack()");
+
+  /* 预读终端配置文件　*/
+  if ((fp = _swFopen("config/SWMSGPACK.CFG","r")) == NULL)
+  {
+    swVdebug(1,"S0840: [错误/系统调用] fopen()函数,errno=%d[%s], swt_sys_ttytype文件打开出错",errno,strerror(errno));
+    fclose(fp);
+    return(-1);
+  }
+  
+  i = 0;
+  igCount_msgtype = 0;
+  
+  while ((ilRc = _swGetitemmode2(fp, palFldvalue,11)) == 0)
+  {
+    i++; 
+    sgSwt_sys_msgpack.msg_type = atoi(palFldvalue[0]);
+    if( sgSwt_sys_msgpack.msg_type < 1)
+    {
+      swVdebug(1,"S0850: [错误/其它] 类型出错");
+    }
+  
+    wsgSwt_sys_msgpack = (struct swt_sys_msgpack *)realloc(wsgSwt_sys_msgpack,
+      i * sizeof(struct swt_sys_msgpack));
+
+    sgSwt_sys_msgpack.fld_id = atol(palFldvalue[1]); //modified by mzg 20150428 atoi->atol
+    strcpy(sgSwt_sys_msgpack.fld_desc,palFldvalue[2]);
+
+    ilRc = _swExpN2T(palFldvalue[3],alTmpexp);
+    if (ilRc != SUCCESS) return(ilRc);
+    strcpy(sgSwt_sys_msgpack.fld_express,alTmpexp);
+
+         
+    sgSwt_sys_msgpack.fld_len = atoi(palFldvalue[4]);
+    sgSwt_sys_msgpack.fld_display_len = atoi(palFldvalue[5]);
+    strcpy(sgSwt_sys_msgpack.fld_alignment,palFldvalue[6]);
+  
+    memcpy((char *)&(wsgSwt_sys_msgpack[i-1]),
+      (char *)&sgSwt_sys_msgpack,sizeof(struct swt_sys_msgpack));
+  
+    swVdebug(2,"S0860: wsgSwt_sys_msgpack[%d]:%d,%ld,%s,%s,"\
+      "%d,%d,%s",i-1,
+    	  wsgSwt_sys_msgpack[i-1].msg_type,
+     	  wsgSwt_sys_msgpack[i-1].fld_id,
+      	  wsgSwt_sys_msgpack[i-1].fld_desc,
+      	  wsgSwt_sys_msgpack[i-1].fld_express,
+      	  wsgSwt_sys_msgpack[i-1].fld_len,
+      	  wsgSwt_sys_msgpack[i-1].fld_display_len,
+      	  wsgSwt_sys_msgpack[i-1].fld_alignment);
+  
+  }
+  
+  igCount_msgtype = i;
+  fclose(fp);
+  swVdebug(2,"S0870: 读报文组织表成功");
+  
+  swVdebug(4,"S0880: [函数返回] swLoadmsgpack()返回码=0");
+  return(SUCCESS);
+}
+ 
+/**************************************************************
+ ** 函数名      ：swLoadmsgpack1()
+ ** 功  能      ：预读终端配置表
+ ** 作  者      ：
+ ** 建立日期    ：
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：psgSwt_sys_msgpack
+ ** 参数含义    ：iMsgtype:显示报文类型;iCount:显示参数个数
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swLoadmsgpack1(short iMsgtype,int *iCount)
+{
+  int i;
+  FILE *fp;
+  char palFldvalue[10][iFLDVALUELEN];
+  short ilRc;
+  char alTmpexp[2*iFLDVALUELEN + 1];   /* add by zjj 2001.11.29 */
+  
+  swVdebug(4,"S0890: [函数调用] swLoadmsgpack1(%d)",iMsgtype);
+
+  swVdebug(2,"S0900: 开始读取类型为%d的报文 ",iMsgtype);
+
+  /* 预读配置文件　*/
+  if ((fp = _swFopen("config/SWMSGPACK.CFG","r")) == NULL)
+  {
+    swVdebug(1,"S0910: [错误/系统调用] fopen()函数,errno=%d[%s],打开swt_sys_msgpack.cfg文件出错",errno,strerror(errno));
+    return(-1);
+  }
+  i = 0;
+
+  while ((ilRc = _swGetitemmode2(fp, palFldvalue,11)) == 0)
+  {
+    if (atoi(palFldvalue[0]) == iMsgtype)
+    {
+      sgSwt_sys_msgpack.msg_type = atoi(palFldvalue[0]);
+      sgSwt_sys_msgpack.fld_id = atol(palFldvalue[1]); //modified by mzg 20150428 atoi->atol
+      strcpy(sgSwt_sys_msgpack.fld_desc,palFldvalue[2]);
+      
+      /* add by zjj 2001.11.29  */
+      ilRc = _swExpN2T(palFldvalue[3],alTmpexp);
+      if (ilRc != SUCCESS) return(ilRc);
+      strcpy(sgSwt_sys_msgpack.fld_express,alTmpexp);
+      /* end add by zjj 2001.11.29  */
+
+           
+      sgSwt_sys_msgpack.fld_len = atoi(palFldvalue[4]);
+      sgSwt_sys_msgpack.fld_display_len = atoi(palFldvalue[5]);
+      strcpy(sgSwt_sys_msgpack.fld_alignment,palFldvalue[6]);
+
+      psgSwt_sys_msgpack = (struct swt_sys_msgpack *)realloc(psgSwt_sys_msgpack,
+        (i+1)*sizeof(struct swt_sys_msgpack));
+
+      memcpy((char *)&psgSwt_sys_msgpack[i],(char *)&sgSwt_sys_msgpack,
+        sizeof(struct swt_sys_msgpack));
+
+      swVdebug(2,"S0920: psgSwt_sys_msgpack[%d]:%d,%ld,%s,%s,"\
+         "%d,%d,%s",i,
+          psgSwt_sys_msgpack[i].msg_type,
+          psgSwt_sys_msgpack[i].fld_id,
+      	  psgSwt_sys_msgpack[i].fld_desc,
+      	  psgSwt_sys_msgpack[i].fld_express,
+      	  psgSwt_sys_msgpack[i].fld_len,
+      	  psgSwt_sys_msgpack[i].fld_display_len,
+      	  psgSwt_sys_msgpack[i].fld_alignment);
+       i ++;
+    }
+  }/* end while */
+
+  *iCount = i;
+  swVdebug(2,"S0930: 读取类型为%d的报文成功，该报文的域个数为%d ",
+    iMsgtype,*iCount);
+
+  swVdebug(4,"S0940: [函数返回] swLoadmsgpack1()返回码=0");
+  return(0);
+}
+
+
+/**************************************************************
+ ** 函数名      ：swSendwin()
+ ** 功  能      ： 发送到windows前端
+ ** 作  者      ：nh
+ ** 建立日期    ：2001/8/2
+ ** 最后修改日期：
+ ** 调用其它函数：无
+ ** 全局变量    ：
+ ** 参数含义    ：无
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swSendwin(int iSock,char *aAddr,short iPort,char *aMsgpack,unsigned int iMsglen)
+{
+  struct sockaddr_in slSockaddr;
+  struct hostent *host;
+  int ilTolen = sizeof(struct sockaddr_in);
+  int ilRc;
+
+  swVdebug(4,"S0950: [函数调用] swSendwin()");
+
+  if(!(host = gethostbyname(aAddr)))
+  {
+    if(!(host = gethostbyaddr(aAddr,strlen(aAddr),AF_INET)))
+      return -1;
+  }
+
+  slSockaddr.sin_family = AF_INET;
+  memcpy((char*)&slSockaddr.sin_addr,host->h_addr,host->h_length);
+  slSockaddr.sin_port = htons(iPort);
+  
+  ilRc = sendto(iSock,aMsgpack,iMsglen,0,
+        (struct sockaddr *)&slSockaddr,ilTolen);
+  if(ilRc == -1)
+    return -1;
+
+  swVdebug(4,"S0960: [函数返回] swSendwin()返回码=0");
+  return(0);
+}
+
+/**************************************************************
+ ** 函数名      : swGetField
+ ** 功  能      : 从 aBuffer 中取第n个字段放入aField中。
+                  aBuffer中的每个字段以Seperator为分隔苻。
+                  n 从 1 开始。
+ ** 作  者      : nh 
+ ** 建立日期    : 2001/08/10
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : aBuffer   : 原串
+                  n         : 序号
+                  aField    : 目的域
+                  Seperator : 分隔符
+ ** 返回值      : SUCCESS
+***************************************************************/
+
+int swGetField(char *aBuffer,int n,char *aField,char Seperator)
+{
+  int  i,ilLen,j;
+  char *alTmp, alBegin[200];
+
+  swVdebug(4,"S0970: [函数调用] swGetField()");
+
+  i=0 ;
+  alTmp=aBuffer;
+
+  if(*alTmp == Seperator)
+  {
+    alTmp++;
+    i++;
+  }
+  
+  while(*alTmp != '\0' &&  i != n-1) 
+  {
+    if(*alTmp == Seperator && *(alTmp-1) != '^') 
+    {
+      alTmp++;
+      i++;
+    }
+    else
+    alTmp++;
+  }
+  
+  if (*alTmp == '\0') 
+  {
+    aField[0] ='\0';
+    return(0);
+  }
+  
+  alBegin[0] = '\0';
+  ilLen=0;
+  
+  for(j=0; *alTmp != '\0' && j<200; j++)
+  {
+    if(*alTmp == Seperator && *(alTmp-1) != '^') 
+      break;
+    if(*alTmp == '^' && (*(alTmp+1) == '^' || *(alTmp+1) ==Seperator)) 
+    {
+      alTmp++;
+      alBegin[j] = *alTmp;
+    }
+    else alBegin[j] = *alTmp;
+    alTmp++;
+    ilLen++;
+  }
+  
+  if (ilLen != 0)
+  {
+    memcpy(aField, alBegin, ilLen);
+    aField[ilLen] = '\0';
+    return(ilLen);
+  }
+  
+  else 
+  {
+    aField[0] = '\0';
+
+    swVdebug(4,"S0980: [函数返回] swGetField()返回码=0");
+    return(0);
+  }
+}
+int swFwrite(char *aBuf,short iType)
+{
+  int  ilRc,ilLen=0;
+  long llLogfilesize;
+  char alFile[1024],alTmp[1024],alCmdbuf[1024];
+  long llDatetime;
+  struct stat slBuf;
+  struct tm  *sttm;
+
+  sprintf(alTmp,"%s\n",aBuf);
+  llLogfilesize = 8388608L;
+
+  memset(alFile,0x00,sizeof(alFile));
+  sprintf(alFile,"%s/monlog/%s_%d.log",getenv("SWITCH_MON_PATH"),
+    psgSwt_sys_ttytype[iType].discrib,psgSwt_sys_ttytype[iType].Term_id);
+
+  ilRc=stat(alFile, &slBuf);
+  if (slBuf.st_size > llLogfilesize)
+  {
+    fclose(fgPack[iType]);
+
+    time(&llDatetime);
+    sttm = localtime( &llDatetime );
+
+    sprintf(alCmdbuf,"mv %s %s.%02d%02d%02d%02d%02d",
+      alFile,alFile,
+      sttm->tm_mon+1,
+      sttm->tm_mday,
+      sttm->tm_hour,
+      sttm->tm_min,
+      sttm->tm_sec );
+    if ((access(alFile,F_OK)) != -1)
+      system(alCmdbuf);
+    if (( fgPack[iType] = fopen(alFile,"a+")) == NULL)  return(-1);
+  }
+
+  fprintf(fgPack[iType],"%s",alTmp);
+
+  swVdebug(2,"S0990: swFwrite() 写文件成功,len=[%d]",ilLen);
+  fflush(fgPack[iType]);
+  
+  return(0);
+}
+
+int swFwinr()
+{
+  int  i,ilLen = 0;
+  char alFile[100];
+  struct swt_sys_win pslWin[SENDMAX];
+  
+  swVdebug(3,"S1000: swFwinr() begin ");
+  sprintf(alFile,"%s/sysmon.ini",getenv("SWITCH_MON_PATH"));
+  if((fgWin = fopen(alFile,"r")) == NULL)
+  {
+    if((fgWin = fopen(alFile, "w+")) == NULL)
+    {
+      swVdebug(1,"S1005: 打开文件[%s]出错!",alFile);
+      return(FAIL);
+    }
+  }
+  swVdebug(1,"S1006: 打开文件[%s]成功!",alFile);
+  memset((char *)pslWin,0x00,SENDMAX*sizeof(struct swt_sys_win));
+  ilLen = fread((char *)pslWin,sizeof(struct swt_sys_win),SENDMAX,fgWin); 
+  if(ilLen < 0)
+    return(-1);
+  if(ilLen > 0)
+  {
+    swVdebug(4,"S1010: swFwinr() fread len=[%d]",ilLen);
+
+    for(i = 0; i < SENDMAX; i++)
+    {
+      if(pslWin[i].usrflag == 0) break;
+      memcpy((char *)&psgSendwin[i],(char *)&pslWin[i],sizeof(struct swt_sys_win));
+      psgSendwin[i].iNum_id = 0;
+      psgSendwin[i].iEcho_id = 0;
+
+    }
+    for(i = 0; i < SENDMAX; i++)
+      swVdebug(4,"S1020: swFwinr() [%d][%s][%d][%d][%ld][%ld]",
+        psgSendwin[i].usrflag,
+        psgSendwin[i].address,
+        psgSendwin[i].port,
+        psgSendwin[i].Msg_id,
+        psgSendwin[i].iNum_id,
+        psgSendwin[i].iEcho_id);
+  }
+  swVdebug(3,"S1030: swFwinr() return success ");
+  fclose(fgWin);
+  return(0);
+}
+int swFwinw()
+{
+  int  i,ilLen = 0;
+  char alFilewin[100];
+
+  swVdebug(3,"S1040: swFwinw() begin ");
+  
+  sprintf(alFilewin,"%s/sysmon.ini",getenv("SWITCH_MON_PATH"));
+  if((fgWin = fopen(alFilewin,"w+")) == NULL)
+  {
+    swVdebug(1,"S1050: swFwinw() fopen(),errno=%d[%s], 文件[%s]打开出错",errno,strerror(errno),alFilewin);
+    fclose(fgWin);
+    return(-1);
+  }
+  
+  for(i=0;i<SENDMAX;i++)
+  {
+    if(psgSendwin[i].usrflag == 1)
+    { 
+      ilLen = fwrite((char *)&psgSendwin[i],sizeof(struct swt_sys_win),1,fgWin);
+      if(ilLen < 0)
+        return(-1);
+      swVdebug(4,"S1060: swFwinw() fwrite len=[%d]",ilLen);
+    }
+  }
+
+  fclose(fgWin);
+  return(0);
+}

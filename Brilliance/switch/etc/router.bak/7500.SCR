@@ -1,0 +1,4 @@
+ROUTEDESC=代理保险业务系统交易
+[ROUTE]
+10 SET direction=1  # 路由方向,1代表是后台主动发起的交易
+20 SEND 75 WITH END

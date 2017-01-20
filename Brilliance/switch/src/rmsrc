@@ -1,0 +1,6 @@
+if [ -f .swmake.tmp ]
+then
+  > $1
+  rm -f .swmake.tmp
+fi
+

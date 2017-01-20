@@ -1,0 +1,30 @@
+ROUTEDESC=” “Ê±¶ªπøÓ                                  
+[ROUTE]                                               
+10 IF GT(LEN(FML(PTERRFLAG)),0) THEN GOTO 400         
+20 IF SEQ(PTPORTGET(101,1),0) THEN GOTO 800           
+30 CALL 101 WITH REVMODE 1                            
+50 IF SEQ(PTPORTGET(102,1),0) THEN GOTO 800           
+60 CALL 102  WITH REVMODE 1                           
+70 IF SEQ(PTPORTGET(103,1),0) THEN GOTO 800           
+80 CALL 103  WITH REVMODE 1                           
+90 IF SEQ(PTPORTGET(104,1),0) THEN GOTO 800           
+100 CALL 104  WITH REVMODE 1                          
+110 IF SEQ(PTPORTGET(104,1),0) THEN GOTO 800          
+120 CALL 104  WITH REVMODE 1                          
+130 IF SEQ(PTPORTGET(110,1),0) THEN GOTO 800          
+140 CALL 110 WITH REVMODE 1                           
+150 IF SEQ(PTPORTGET(112,1),0) THEN GOTO 800          
+160 CALL 112  WITH REVMODE 1                          
+170 IF SEQ(PTPORTGET(116,1),0) THEN GOTO 800          
+180 CALL 116  WITH REVMODE 1                          
+200 IF SEQ(PTPORTGET(110,1),0) THEN GOTO 800          
+210 CALL 110 WITH REVMODE 1                           
+220 IF SEQ(PTPORTGET(112,1),0) THEN GOTO 800          
+230 CALL 112  WITH REVMODE 1                          
+240 IF SEQ(PTPORTGET(116,1),0) THEN GOTO 800          
+250 CALL 116  WITH REVMODE 1                          
+                                                      
+400 SEND MSGHEAD(iBegin_q_id) WITH END                
+800 SET retcode = 20009997                            
+810 SEND MSGHEAD(iBegin_q_id) WITH END, GROUP 23999   
+

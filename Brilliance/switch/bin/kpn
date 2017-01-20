@@ -1,0 +1,44 @@
+UNAME=`uname`
+USERNAME=`whoami`
+
+if [ $UNAME = "Linux" ]
+then
+	if test $# -gt 0
+	then
+	  for pname in $* 
+	  do
+#	pid=`ps -ef |grep $USERNAME| grep -v grep|awk '{print $2}'| awk '{print $1}'`
+	pid=`ps -ef |grep $USERNAME| grep -v grep|awk '{print $2,$8}'| grep $pname|awk '{print $1}'`
+	      
+	      echo now killing pocess $pname pid is $pid 
+	      kill -9 $pid
+	  done
+	  exit  0
+	else
+	  echo  'usage: kpn <process_name_you_want_to_kill>'
+	  exit  1
+	fi
+else
+	export UNIX95="ps -o user,pid,comm"
+	if test $# -gt 0
+	then
+	  for pname in $*
+	  do
+	      pid=`ps -ef -o "user" -o "pid" -o "comm"|grep $USERNAME| grep -v grep|awk '{print $2,$3}'| grep $pname|awk '{print $1}'`
+	      
+	      echo now killing pocess $pname pid is $pid
+	      kill -9 $pid
+	  done
+	  exit  0 
+	else
+	  echo  'usage: kpn <process_name_you_want_to_kill>'
+	  exit  1
+	fi
+fi
+
+
+
+
+
+
+

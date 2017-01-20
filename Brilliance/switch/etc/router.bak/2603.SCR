@@ -1,0 +1,3 @@
+ROUTEDESC=信用卡人工座席本地交易
+[ROUTE]
+10 SEND 26 WITH END

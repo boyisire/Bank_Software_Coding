@@ -1,0 +1,3 @@
+ROUTEDESC=为ivr测试专用路由
+[ROUTE]
+10 SEND 25 WITH END

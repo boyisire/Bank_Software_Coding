@@ -1,0 +1,7 @@
+[Brilliance Q 2.0]
+LICENSEE=新晨集团南方软件中心
+SERIAL=20011206-4.3-1001
+ORDERLIST=BrillianceQ
+USERS=100
+DATE=20211212
+SIGNATURE="!!!11#-&.$,#01Bhbl}aib~Ae!!""1!1"#

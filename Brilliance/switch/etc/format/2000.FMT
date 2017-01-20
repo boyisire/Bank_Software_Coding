@@ -1,0 +1,9 @@
+FMTDESC=电子银行-电子银行客户信息登录-请求
+TRANTYPE=104
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10  FIELD 1  = FML(DATA0)           # 交易原文
+20  FIELD 2  = FML(DATA1)           # 交易原文
+30  FIELD 3  = FML(DATA2)           # 交易原文
+30  FIELD 4  = FML(DATA3)           # 交易原文

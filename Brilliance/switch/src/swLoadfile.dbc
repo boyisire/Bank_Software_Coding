@@ -1,0 +1,1577 @@
+/*************************************************************************/
+/* 模块编号    ：swLoadfile                                              */
+/* 模块名称    ：导入文件模块                                            */
+/* 版 本 号    ：                                                        */
+/* 作    者    ：                                                        */
+/* 建立日期    ：2006-12-30                                              */
+/* 最后修改日期：                                                        */
+/* 模块用途    ：交换平台配置管理文件数据库导入                          */
+/* 本模块中包含如下函数及功能说明：                                      */
+/*（1）int main();                                                       */
+/* 函数说明    ：数据库相关数据导出(27张表)                              */
+/*（2）int swFile_format(long al_count,short rcd_count,char *tabname);  */
+/* 函数说明    ：数据库数据格式调整,并写入相关文件                       */
+/*************************************************************************/
+
+/*************************************************************************/
+/* 修改记录:                                                             */
+/*最后修改日期2007-01-10                                                 */
+/*************************************************************************/
+
+/* 头文件定义 */
+#include <time.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <errno.h>
+#include <stdio.h>   
+#include <dirent.h>
+/*#include "sqlenv.h"*/
+#include "switch.h"
+
+/* switch定义 */
+
+#ifdef OS_AIX
+#define CHANGCODE  "dos2aix"
+#endif
+
+#ifdef OS_LINUX
+#define CHANGCODE  "dos2unix"
+#endif
+
+/* 数据库定义 */   
+EXEC SQL INCLUDE sqlca;
+#ifdef DB_POSTGRESQL
+EXEC SQL INCLUDE swDbstruct.h;
+#endif
+#ifdef DB_DB2
+EXEC SQL INCLUDE '../inc/swDbstruct.h';
+#endif
+#ifdef DB_INFORMIX
+EXEC SQL INCLUDE 'swDbstruct.h';
+#endif
+#ifdef DB_ORACLE
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+#ifdef DB_SYBASE
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+/* 函数原型定义 */
+int swFile_format(int al_count,short rcd_count,char *tabname);
+int swFile_load();
+int swLoop_for_update_cfg();
+
+/* 常量定义 */   
+#define MAXCOUNT   100000
+#define MAXLEN     800   
+#define FLDLEN     128   
+#define STRLEN     5000
+#define TBL_LEN    50
+#define TBNUM      sizeof(alTb_name)/TBL_LEN
+#define BMQTBNUM   sizeof(alBmqtabname)/TBL_LEN
+#define SWTTBNUM   sizeof(alSwttabname)/TBL_LEN
+
+/* 结构体定义 */
+struct slRcd{
+    int  slRcd_num;
+    char slRcd_fld_name[FLDLEN+1];
+    char slRcd_fld_data[STRLEN+1];
+};
+char alTb_name[][TBL_LEN]={"TBL_MGM_FMT_GRP","TBL_MGM_CFG","SWT_SYS_DEBUG",/*"SWT_SYS_CODE",*/
+    "TBL_MGM_BMQ_MBX_GRP_CFG","SWT_SYS_TASK","SWT_SYS_OTHER","SWT_SYS_COMM",
+    "SWT_SYS_MATCHPORT","SWT_SYS_MSGPACK","SWT_SYS_TTYTYPE","SWT_SYS_MACRO",
+    "SWT_SYS_IMF","TBL_MGM_FMT_M","TBL_MGM_FLOW_CD","TBL_MGM_ROUTE_M",
+    "TBL_MGM_TRAN_CTL","TBL_MGM_8583_CFG","TBL_MGM_8583_GRP","SWT_SYS_8583E",
+    "SWT_SYS_8583E_GRP","SWT_SYS_USERFUN","BMQ_ROUTER_SET_CONFIG","BMQ_MAILBOX_CONFIG","BMQ_GROUP_CONFIG","BMQ_SYS_CLS","BMQ_SYS_CONFIG","BMQ_CHK_CLIP_DENY","BMQ_CHK_CLIP_ALLOW"};
+char alBmqtabname[][TBL_LEN]={"BMQ_ROUTER_SET_CONFIG","BMQ_MAILBOX_CONFIG","BMQ_GROUP_CONFIG","BMQ_SYS_CLS","BMQ_SYS_CONFIG","BMQ_CHK_CLIP_DENY","BMQ_CHK_CLIP_ALLOW"};
+char alSwttabname[][TBL_LEN]={"TBL_MGM_FMT_GRP","TBL_MGM_CFG","SWT_SYS_DEBUG",/*"SWT_SYS_CODE",*/
+    "TBL_MGM_BMQ_MBX_GRP_CFG","SWT_SYS_TASK","SWT_SYS_OTHER","SWT_SYS_COMM",
+    "SWT_SYS_MATCHPORT","SWT_SYS_MSGPACK","SWT_SYS_TTYTYPE","SWT_SYS_MACRO",
+    "SWT_SYS_IMF","TBL_MGM_FMT_M","TBL_MGM_FLOW_CD","TBL_MGM_ROUTE_M",
+    "TBL_MGM_TRAN_CTL","TBL_MGM_8583_CFG","TBL_MGM_8583_GRP","SWT_SYS_8583E",
+    "SWT_SYS_8583E_GRP","SWT_SYS_USERFUN"};
+/* 结构体定义 */
+struct _stHost{
+    char hostname[128];
+    int idbcfgflag;
+    int iswcfgflag;
+};
+struct _stHost *pstHost;
+
+int ilFlag = 0;
+int igRcd_fld_count;
+int ilRc=0;
+
+
+int setCfgFlag(char *pHostName,int iswCfgFlag,int idbCfgFlag);
+
+/* 变量定义 */
+char swTmpname[30];
+struct slRcd *sgRcd_data;    
+/***************************************************************
+ ** 函数名      : strtoupper
+ ** 功  能      : 字符串转换为大写
+ ** 作  者      :
+ ** 建立日期    : 2001/05/26
+ ** 最后修改日期: 2001/05/26
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    :
+ ** 返回值      : 0:成功 / -1:失败 
+***************************************************************/
+static int strtoupper(char *aBuf)
+{
+  while (*aBuf != '\0')
+  {
+    *aBuf = toupper(*aBuf);
+    aBuf++; 
+  }
+  return(0);
+}
+/**************************************************************/
+/* 函数名: main()                                             */
+/* 功  能: 数据库数据导出至相关配置文件                       */
+/* 作  者: hxz                                                */
+/* 建立日期: 2006-12-30                                       */
+/* 最后修改日期:                                              */
+/* 调用其它函数: swFile_format();                             */
+/* 全局变量:                                                  */
+/* 参数含义:                                                  */
+/* 返回值:                                                    */
+/**************************************************************/
+int main(int argc,char **argv)
+{   
+    /* 设置调试程序名称 */
+    memset(agDebugfile,0x00,sizeof(agDebugfile));
+    strcpy(agDebugfile,"swLoadfile.debug");
+    /* 读取DEBUG标志 */
+    if((cgDebug = _swDebugflag("swLoadfile")) == FAIL)
+    {
+        fprintf(stderr,"读取DEBUG标志出错!");
+        exit(FAIL);
+    }
+    /* 打开数据库 */
+    if(swDbopen() != SUCCESS)
+    {
+        swVdebug(2,"S0030: [错误/数据库] swDbopen()打开数据库出错");
+        exit(FAIL);
+    }
+    swVdebug(2,"S0040: 打开数据库成功");
+    swVdebug(2,"S0000: 版本号[1.0.0]");
+    swVdebug(2,"S0010: DEBUG文件[%s]",agDebugfile);
+    swVdebug(2,"S0020: DEBUG标志[%d]",cgDebug);
+
+    swLoop_for_update_cfg();
+    if(ilRc==0)
+        return 0;
+
+/*
+    ilRc=swFile_load(argc,argv);
+    if(ilRc!=0)
+    {
+        swVdebug(2,"S9999: [错误/函数] 调用swFile_load函数出错！");
+    }
+*/
+
+    swDbclose();
+    exit(0);
+}
+/**************************************************************/
+/* 函数名: swFile_format()                                    */
+/* 功  能: 数据库数据格式调整,并写入相关文件                  */
+/* 作  者: hxz                                                */
+/* 建立日期: 2006-12-30                                       */
+/* 最后修改日期:                                              */
+/* 调用其它函数:                                              */
+/* 全局变量:                                                  */
+/* 参数含义:                                                  */
+/* 返回值: 0                                                  */
+/**************************************************************/
+int swFile_format(int al_count,short rcd_count,char *tabname)   
+{
+    swVdebug(2,"al_count=%d,rcd_count=%d,tabname=%s",al_count,rcd_count,tabname);
+    //  char alDb2_data[MAXCOUNT][MAXLEN];
+    char alTmpstr[STRLEN],alTmpstr1[STRLEN];
+    int i=0,n=0,j=0;
+    char   alCommand[200];
+    char  alTime_Now[15];
+    //  memset(alDb2_data,0x00,MAXCOUNT*MAXLEN);
+    memset(alTmpstr,0x00,STRLEN);
+    FILE *fp; 
+    char alFname[200];
+    char alBackupFname[200];
+    memset(alFname,0x00,sizeof(alFname));  
+    memset(alBackupFname,0x00,sizeof(alBackupFname));  
+    memset(alTime_Now,0x00,sizeof(alTime_Now));  
+    
+    GetFormatTime(alTime_Now,sizeof(alTime_Now),"%Y%m%d%H%M%S");
+
+//    printf("%s\n",tabname);  
+    if(strcmp(tabname,"TBL_MGM_CFG")==0)
+    {
+//        sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWCONFIG_MZG.CFG");
+        sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWCONFIG.CFG");
+        sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWCONFIG.CFG",alTime_Now);
+        rename(alFname,alBackupFname);
+        swVdebug(2,"S0230: 打开要写入文件%s",alFname);
+        fp = fopen(alFname, "w+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0240:[错误/文件]打开要写入文件%s出错",alFname); 
+//            exit(FAIL);
+            return -1;
+        }
+        swVdebug(2,"S0250:开始写入文件");
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    {  
+                        fprintf(fp,"%s=%s\n",sgRcd_data[i].slRcd_fld_name,sgRcd_data[i].slRcd_fld_data);
+                    }
+                }
+            }
+        }
+        al_count=0;
+        fclose(fp);    
+        swVdebug(2,"S0260:写入%s文件成功",alFname);
+    }
+    else if(strcmp(tabname,"TBL_MGM_FMT_GRP")==0||strcmp(tabname,"TBL_MGM_FLOW_CD")==0)
+    {
+        if(strcmp(tabname,"TBL_MGM_FMT_GRP")==0)
+        {
+            memset(alFname,0x00,sizeof(alFname));
+            memset(alBackupFname,0x00,sizeof(alBackupFname));
+//            sprintf(alFname,"%s/etc/format_mzg",getenv("SWITCH_DIR"));
+            sprintf(alFname,"%s/etc/format",getenv("SWITCH_DIR"));
+            sprintf(alBackupFname,"%s/etc/backup/format%s",getenv("SWITCH_DIR"),alTime_Now);
+            rename(alFname,alBackupFname);
+            mkdir(alFname,0755);
+
+            for(j=0;j<rcd_count;j++)
+            {
+                for(i=0;i<=al_count;i++)
+                {
+                    if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                    {break;}
+                    else
+                    {
+                        if(sgRcd_data[i].slRcd_num==j)
+                        {
+                            if(strcmp(sgRcd_data[i].slRcd_fld_name,"FMT_GRP")==0)
+                            {
+                                memset(alFname,0x00,sizeof(alFname));
+                                _swTrim(sgRcd_data[i].slRcd_fld_data);
+//                                sprintf(alFname,"%s/etc/format1/%s.FMT",getenv("SWITCH_DIR"),sgRcd_data[i].slRcd_fld_data);
+                                sprintf(alFname,"%s/etc/format/%s.FMT",getenv("SWITCH_DIR"),sgRcd_data[i].slRcd_fld_data);
+                                swVdebug(2,"S0270:打开要写入文件%s",alFname);
+                                fp = fopen(alFname, "w+");    
+                                if (!fp)
+                                {
+                                    swVdebug(2,"S0280:[错误/文件]打开要写入文件%s出错",alFname);
+                                    //exit(FAIL);
+                                    return -1;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                swVdebug(2,"S0290:开始写入文件");
+                for(i=0;i<=al_count;i++)
+                {
+                    if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                    {break;}
+                    else
+                    {
+                        if(sgRcd_data[i].slRcd_num==j)
+                        {  
+                            if(!strcmp(sgRcd_data[i].slRcd_fld_name,"FMT_GRP"))
+                            {}
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TDF"))
+                            {
+                                fprintf(fp,"%s\n","[TDF]");
+                            }
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TDF_MEMO"))
+                            {
+                                fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                            }
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TDF_MEMO1"))
+                            {
+                                fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                            }
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TDF_MEMO2"))
+                            {
+                                fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                            }
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TDF_MEMO3"))
+                            {
+                                fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                            }
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TDF_MEMO4"))
+                            {
+                                fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                            }
+                            else
+                                fprintf(fp,"%s=%s\n",sgRcd_data[i].slRcd_fld_name,sgRcd_data[i].slRcd_fld_data);
+                        }
+                    }
+                }
+                fclose(fp);  
+                memset(alCommand,0x00,sizeof(alCommand));
+                sprintf(alCommand,"%s %s %s",CHANGCODE,alFname,"2>/dev/null");
+                /*swVdebug(2,"99999999[FMT]%s\n",alCommand);*/
+                system(alCommand);
+            }
+            al_count=0;
+            swVdebug(2,"S0300:写入%s文件成功",alFname);
+        }
+        else if(strcmp(tabname,"TBL_MGM_FLOW_CD")==0)
+        {
+            memset(alFname,0x00,sizeof(alFname));
+            memset(alBackupFname,0x00,sizeof(alBackupFname));
+//            sprintf(alFname,"%s/etc/router_MZG",getenv("SWITCH_DIR"));
+            sprintf(alFname,"%s/etc/router",getenv("SWITCH_DIR"));
+            sprintf(alBackupFname,"%s/etc/backup/router%s",getenv("SWITCH_DIR"),alTime_Now);
+            rename(alFname,alBackupFname);
+            mkdir(alFname,0755);
+
+            for(j=0;j<rcd_count;j++)
+            {
+                for(i=0;i<=al_count;i++)
+                {
+                    if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                    {break;}
+                    else
+                    {
+                        if(sgRcd_data[i].slRcd_num==j)
+                        {
+                            if(strcmp(sgRcd_data[i].slRcd_fld_name,"TRANS_FLOW_CD")==0)
+                            {
+                                memset(alFname,0x00,sizeof(alFname));
+//                                sprintf(alFname,"%s/etc/router_MZG/%s.SCR",getenv("SWITCH_DIR"),sgRcd_data[i].slRcd_fld_data);
+                                sprintf(alFname,"%s/etc/router/%s.SCR",getenv("SWITCH_DIR"),sgRcd_data[i].slRcd_fld_data);
+                                swVdebug(2,"S0310:打开要写入文件%s",alFname);
+                                fp = fopen(alFname, "w+");    
+                                if (!fp)
+                                {
+                                    swVdebug(2,"S0320:[错误/文件]打开要写入文件%s出错",alFname);
+                                    //exit(FAIL);
+                                    return -1;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                for(i=0;i<=al_count;i++)
+                {
+                    if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                    {break;}
+                    else
+                    {
+                        if(sgRcd_data[i].slRcd_num==j)
+                        {  
+                            if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TRANS_FLOW_CD"))
+                            {}
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"FLOW_DESC"))
+                            {
+                                fprintf(fp,"ROUTEDESC=%s\n",sgRcd_data[i].slRcd_fld_data);
+                                fprintf(fp,"%s\n","[ROUTE]");
+                            }
+                            else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"FLOW_SCRIPT1")) 
+                            {
+                                fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                            }
+/*
+                            else
+                                fprintf(fp,"%s=%s\n",sgRcd_data[i].slRcd_fld_name,sgRcd_data[i].slRcd_fld_data);
+*/
+                        }
+                    }
+                }
+                fclose(fp);  
+                memset(alCommand,0x00,sizeof(alCommand));
+                sprintf(alCommand,"%s %s %s",CHANGCODE,alFname,"2>/dev/null");
+                /*swVdebug(2,"99999999[RUT]%s\n",alCommand);*/
+                system(alCommand);
+            }
+            al_count=0;
+            swVdebug(2,"S0330:写入%s文件成功",alFname);
+        }
+    }
+    else if(strcmp(tabname,"TBL_MGM_BMQ_MBX_GRP_CFG")==0||strcmp(tabname,"SWT_SYS_TASK")==0)
+    {
+
+        if(strcmp(tabname,"TBL_MGM_BMQ_MBX_GRP_CFG")==0)
+        {
+//            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWAPPS_MZG.CFG");
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWAPPS.CFG");
+            sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWAPPS.CFG",alTime_Now);
+            rename(alFname,alBackupFname);
+        }
+        else if(strcmp(tabname,"SWT_SYS_TASK")==0)
+        {
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWTASK.CFG");
+        }
+        swVdebug(2,"S0340:打开要写入文件%s",alFname);
+        fp = fopen(alFname, "w+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0350:[错误/文件]打开要写入文件%s出错",alFname);
+            //exit(FAIL);
+            return -1;
+        }
+        swVdebug(2,"S0360:开始写入文件");
+
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    { 
+                        memset(alTmpstr,0x00,sizeof(alTmpstr));
+                        if(strcmp(sgRcd_data[i].slRcd_fld_name,"BMQID")==0)
+                        {
+                            strcpy(alTmpstr,sgRcd_data[j].slRcd_fld_name);
+                            strcpy(sgRcd_data[j].slRcd_fld_name,sgRcd_data[i].slRcd_fld_name);
+                            strcpy(sgRcd_data[i].slRcd_fld_name,alTmpstr);
+//                            swVdebug(2,"i=%d,alTmpstr=%s",i,alTmpstr);
+                            strcpy(alTmpstr,sgRcd_data[j].slRcd_fld_data);
+                            strcpy(sgRcd_data[j].slRcd_fld_data,sgRcd_data[i].slRcd_fld_data);
+                            strcpy(sgRcd_data[i].slRcd_fld_data,alTmpstr);
+//                            swVdebug(2,"i=%d,alTmpstr=%s",i,alTmpstr);
+                        }
+                    }
+                }
+            }
+        }
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    { 
+//                        swVdebug(2,"T=%s,D=%s,i=%d",sgRcd_data[i].slRcd_fld_name,sgRcd_data[i].slRcd_fld_data,i);
+                        if(strcmp(sgRcd_data[i].slRcd_fld_name,"BMQID")==0)
+                            fprintf(fp,"[%s]\n",sgRcd_data[i].slRcd_fld_data);
+                        else
+                            fprintf(fp,"%s=%s\n",sgRcd_data[i].slRcd_fld_name,sgRcd_data[i].slRcd_fld_data);
+                    }
+                }
+            }
+        }
+        al_count=0;
+        fclose(fp); 
+        swVdebug(2,"S0370:写入%s文件成功",alFname);
+    }
+    else if(strcmp(tabname,"SWT_SYS_CODE")==0||strcmp(tabname,"SWT_SYS_OTHER")==0
+            ||strcmp(tabname,"SWT_SYS_COMM")==0||strcmp(tabname,"SWT_SYS_MATCHPORT")==0
+            ||strcmp(tabname,"SWT_SYS_MSGPACK")==0||strcmp(tabname,"SWT_SYS_TTYTYPE")==0
+            ||strcmp(tabname,"SWT_SYS_MACRO")==0||strcmp(tabname,"SWT_SYS_IMF")==0
+            ||strcmp(tabname,"TBL_MGM_FMT_M")==0||strcmp(tabname,"SWT_SYS_DEBUG")==0
+            ||strcmp(tabname,"TBL_MGM_ROUTE_M")==0||strcmp(tabname,"BMQ_MAILBOX_CONFIG")==0
+            ||strcmp(tabname,"TBL_MGM_TRAN_CTL")==0
+            ||strcmp(tabname,"TBL_MGM_8583_CFG")==0||strcmp(tabname,"TBL_MGM_8583_GRP")==0
+            ||strcmp(tabname,"SWT_SYS_8583E")==0||strcmp(tabname,"SWT_SYS_8583E_GRP")==0
+            ||strcmp(tabname,"SWT_SYS_USERFUN")==0||strcmp(tabname,"BMQ_ROUTER_SET_CONFIG")==0)
+    {
+        n=0;
+        if(strcmp(tabname,"SWT_SYS_CODE")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWCODE.CFG");
+        else if(strcmp(tabname,"SWT_SYS_OTHER")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWHOSTS.CFG");
+        else if(strcmp(tabname,"SWT_SYS_COMM")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWCOMM.CFG");
+        else if(strcmp(tabname,"TBL_MGM_TRAN_CTL")==0)
+        {
+//            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWTRAN_CTL_MZG.CFG");
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWTRAN_CTL.CFG");
+            sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWTRAN_CTL.CFG",alTime_Now);
+            rename(alFname,alBackupFname);
+        }
+        else if(strcmp(tabname,"TBL_MGM_8583_CFG")==0)
+        {
+//            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWISO8583_MZG.CFG");
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWISO8583.CFG");
+            sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWISO8583.CFG",alTime_Now);
+            rename(alFname,alBackupFname);
+        }
+        else if(strcmp(tabname,"TBL_MGM_8583_GRP")==0)
+        {
+//            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWISO8583GRP_MZG.CFG");
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWISO8583GRP.CFG");
+            sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWISO8583GRP.CFG",alTime_Now);
+            rename(alFname,alBackupFname);
+        }
+        else if(strcmp(tabname,"SWT_SYS_8583E")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWISO8583E.CFG");    
+        else if(strcmp(tabname,"SWT_SYS_8583E_GRP")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWISO8583EGRP.CFG");    
+        else if(strcmp(tabname,"SWT_SYS_USERFUN")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWUSRFUN.CFG");
+        else if(strcmp(tabname,"BMQ_ROUTER_SET_CONFIG")==0)
+            sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmqfilter.ini");
+        else if(strcmp(tabname,"SWT_SYS_MATCHPORT")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMATCH_PORT.CFG");
+        else if(strcmp(tabname,"SWT_SYS_MSGPACK")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMSGPACK.CFG");
+        else if(strcmp(tabname,"SWT_SYS_TTYTYPE")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMONTERM.CFG");
+        else if(strcmp(tabname,"SWT_SYS_MACRO")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMACRO.CFG");
+        else if(strcmp(tabname,"SWT_SYS_IMF")==0)
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWIMF.CFG");
+        else if(strcmp(tabname,"TBL_MGM_FMT_M")==0)
+        {
+//            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMATCH_FMT_MZG.CFG");
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMATCH_FMT.CFG");
+            sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWMATCH_FMT.CFG",alTime_Now);
+            rename(alFname,alBackupFname);
+        }
+        else if(strcmp(tabname,"SWT_SYS_DEBUG")==0)
+            sprintf(alFname,"%s/etc/%s",getenv("SWITCH_DIR"),"debug.ini");
+        else if(strcmp(tabname,"TBL_MGM_ROUTE_M")==0)
+        {
+//            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMATCH_ROUTE_MZG.CFG");
+            sprintf(alFname,"%s/etc/config/%s",getenv("SWITCH_DIR"),"SWMATCH_ROUTE.CFG");
+            sprintf(alBackupFname,"%s/etc/backup/%s.%s",getenv("SWITCH_DIR"),"SWMATCH_ROUTE.CFG",alTime_Now);
+            rename(alFname,alBackupFname);
+        }
+        else if(strcmp(tabname,"BMQ_MAILBOX_CONFIG")==0)
+            sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmq.ini");
+        swVdebug(2,"S0380:打开要写入文件%s",alFname);
+        /*if(strcmp(tabname,"BMQ_MAILBOX_CONFIG")==0)
+          fp = fopen(alFname, "w+");    
+          else*/
+        fp = fopen(alFname, "w+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0390:[错误/文件]打开要写入文件%s出错",alFname);
+            //exit(FAIL);
+            return -1;
+        }
+        swVdebug(2,"S0400:打开要写入文件%s",alFname);
+        if(strcmp(tabname,"BMQ_MAILBOX_CONFIG")==0)
+        {
+            fprintf(fp,"\n%s\n","BEGIN  MAIL");
+        }
+        swVdebug(2,"S0410:开始写入文件"); 
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            { 
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    { 
+                        n++;
+                        if(strlen(sgRcd_data[i].slRcd_fld_data)==0)
+                            strcpy(sgRcd_data[i].slRcd_fld_data,"-");
+                        if(n==(igRcd_fld_count-1))
+                        {
+                            fprintf(fp,"%s    %s\n",alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                            memset(alTmpstr,0x00,sizeof(alTmpstr));
+                            n=0;
+                        }
+                        else
+                        {
+                            if(strcmp(sgRcd_data[i].slRcd_fld_name,"FLD_DISPLAY_LEN")==0)
+                            {  
+                                memset(alTmpstr1,0x00,strlen(alTmpstr1));
+                                sprintf(alTmpstr1,"%d",atoi(sgRcd_data[i].slRcd_fld_data)*3);
+                                strcat(alTmpstr,alTmpstr1);
+                            }
+                            else 
+                                strcat(alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                            strcat(alTmpstr,"    ");              
+                        }
+                    }
+                }
+            }
+        }
+        if(strcmp(tabname,"BMQ_MAILBOX_CONFIG")==0)
+        {
+            fprintf(fp,"%s\n","END    MAIL");
+        }
+        al_count=0;
+        fclose(fp);   
+        swVdebug(2,"S0420:写入%s文件成功",alFname);
+    }
+    else if(strcmp(tabname,"BMQ_GROUP_CONFIG")==0)
+    {
+        n=0;
+        memset(alFname,0x00,sizeof(alFname));
+        sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmqfilesrv.ini");
+        /*sprintf(alFname,"%s/hxz/bmq/%s",getenv("SWITCH_DIR"),"bmqfilesrv.ini");*/
+        swVdebug(2,"S0430:打开要写入文件%s",alFname);
+        fp = fopen(alFname, "w+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0440:[错误/文件]打开要写入文件%s出错",alFname);
+            //exit(FAIL);
+            return -1;
+        }
+        fprintf(fp,"%s\n","BEGIN GRPFILESRV");
+        swVdebug(2,"S0450:开始写入文件");
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    { 
+                        n++;
+                        if(n==(igRcd_fld_count-1))
+                        {
+                            fprintf(fp,"%s\n",alTmpstr);
+                            memset(alTmpstr,0x00,sizeof(alTmpstr));
+                            n=0;
+                        }
+                        else
+                        { 
+                            if(!strcmp(sgRcd_data[i].slRcd_fld_name,"MSG_PORT")||!strcmp(sgRcd_data[i].slRcd_fld_name,"RETRY_TIME"))
+                            {}
+                            else
+                            {
+                                strcat(alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                                strcat(alTmpstr,"    ");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fprintf(fp,"%s\n","END   GRPFILESRV");
+
+        n=0;
+        memset(alFname,0x00,sizeof(alFname));
+        sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmq.ini");
+        /*sprintf(alFname,"%s/hxz/bmq/%s",getenv("SWITCH_DIR"),"bmq.ini");*/
+        fp = fopen(alFname, "a+");    
+        fprintf(fp,"%s\n","BEGIN GROUP");
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    { 
+                        n++;
+                        if(n==(igRcd_fld_count-1))
+                        {
+                            fprintf(fp,"%s    %s\n",alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                            memset(alTmpstr,0x00,sizeof(alTmpstr));
+                            n=0;
+                        }
+                        else
+                        { 
+                            if(!strcmp(sgRcd_data[i].slRcd_fld_name,"FILE_PORT"))
+                            {}
+                            else
+                            {
+                                strcat(alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                                strcat(alTmpstr,"    ");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fprintf(fp,"%s\n","END   GROUP");    
+        al_count=0;
+        fclose(fp);   
+        swVdebug(2,"S0460:写入%s文件成功",alFname);
+    }
+    else if(strcmp(tabname,"BMQ_SYS_CLS")==0)
+    {
+        sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmqcls.ini");
+        /*sprintf(alFname,"%s/hxz/bmq/%s",getenv("SWITCH_DIR"),"bmqcls.ini");*/
+        swVdebug(2,"S0470:打开要写入文件%s",alFname);
+        fp = fopen(alFname, "w+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0480:[错误/文件]打开要写入文件%s出错",alFname);
+            //exit(FAIL);
+            return -1;
+        }    
+        swVdebug(2,"S0490:开始写入文件");
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    {  
+                        if(!strcmp(sgRcd_data[i].slRcd_fld_name,"MEMO")||!strcmp(sgRcd_data[i].slRcd_fld_name,"MEMO1")||!strcmp(sgRcd_data[i].slRcd_fld_name,"MEMO2"))
+                        {}
+                        else
+                            fprintf(fp,"%-30s%s\n",sgRcd_data[i].slRcd_fld_name,sgRcd_data[i].slRcd_fld_data);
+                    }
+                }
+            }
+        }
+        swVdebug(2,"S0500:写入%s文件成功",alFname);
+        fclose(fp);        
+        for(j=0;j<rcd_count;j++)
+        {      
+            memset(alTmpstr,0x00,sizeof(alTmpstr));
+            for(i=0;i<=al_count;i++)
+            {
+
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    {  
+                        if(!strcmp(sgRcd_data[i].slRcd_fld_name,"MBPORT"))
+                        {
+                            /*printf("%s\n",sgRcd_data[i].slRcd_fld_data);*/
+                            memset(alFname,0x00,sizeof(alFname));
+                            sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmq.ini");
+
+                            swVdebug(2,"S0510:打开要写入文件%s",alFname);
+
+                            fp = fopen(alFname, "a+");    
+                            if (!fp)
+                            {
+                                swVdebug(2,"S0520:[错误/文件]打开要写入文件%s出错",alFname);
+                                //exit(FAIL);
+                                return -1;
+                            }
+                            swVdebug(2,"S0530:开始写入文件");
+                            fprintf(fp,"\n%s\n%-30s%s\n%s\n","BEGIN   CLS","MBTCPPORT",sgRcd_data[i].slRcd_fld_data,"END     CLS");
+                            /*修改增加C/S通讯的信息 GZZ*/
+                            fprintf(fp,"\n%s\n%s\n\n%s\n%s\n","BEGIN   C/S","END     C/S","BEGIN CLINF","END   CLINF");
+                        }
+                        else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"FILEPORT"))
+                        {
+                            strcat(alTmpstr,"MBTCPPORT");
+                            strcat(alTmpstr,"      ");
+                            strcat(alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                        }
+                        else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"FILESIZE"))
+                        {
+                            strcat(alTmpstr,"\nBLOCKSIZE");
+                            strcat(alTmpstr,"      ");
+                            strcat(alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                            memset(alFname,0x00,sizeof(alFname));
+                        }
+                    }
+                }
+            }
+            swVdebug(2,"S0540:写入%s文件成功",alFname);
+            if(strlen(alTmpstr))
+            {
+                memset(alFname,0x00,sizeof(alFname));
+                sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmq.ini");
+                /*sprintf(alFname,"%s/hxz/bmq/%s",getenv("SWITCH_DIR"),"bmq.ini");*/
+                swVdebug(2,"S0550:打开%s文件成功",alFname);
+                fp = fopen(alFname, "a+");    
+                swVdebug(2,"S0560:开始写入文件");
+                if (!fp)
+                {
+                    swVdebug(2,"S0570:[错误/文件]打开要写入文件%s出错",alFname);
+                    //exit(FAIL);
+                    return -1;
+                }
+                fprintf(fp,"\n%s\n%s\n%s\n","BEGIN   FILECLS",alTmpstr,"END     FILECLS");
+                swVdebug(2,"S0580:写入%s文件成功",alFname);
+            }
+        }
+        al_count=0;
+        fclose(fp);        
+        swVdebug(2,"S0590:写入%s文件成功",alFname);
+    }
+    else if(strcmp(tabname,"BMQ_SYS_CONFIG")==0)
+    {
+        sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmq.ini");
+        /*sprintf(alFname,"%s/hxz/bmq/%s",getenv("SWITCH_DIR"),"bmq.ini");*/
+        swVdebug(2,"S0600:打开%s文件成功",alFname);
+        fp = fopen(alFname, "a+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0610:[错误/文件]打开要写入文件%s出错",alFname);
+            //exit(FAIL);
+            return -1;
+        }
+        swVdebug(2,"S0620:开始写入文件");
+        for(j=0;j<rcd_count;j++)
+        {
+            memset(alTmpstr,0x00,sizeof(alTmpstr));
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    {  
+                        if(!strcmp(sgRcd_data[i].slRcd_fld_name,"TRACE_LEVEL"))
+                        {
+                            fprintf(fp,"\n%s\n","BEGIN DEBUG");
+                            fprintf(fp,"DEBUGFLAG%15s\n",sgRcd_data[i].slRcd_fld_data);
+                            fprintf(fp,"%s\n","END   DEBUG");
+                        }
+                        else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"WAIT_TIME"))
+                        {
+                            fprintf(fp,"\n%s\n","BEGIN WTIME");
+                            fprintf(fp,"WAITTIME%15s\n",sgRcd_data[i].slRcd_fld_data);
+                            fprintf(fp,"%s\n","END   WTIME");
+                        }
+                        else if(!strcmp(sgRcd_data[i].slRcd_fld_name,"SHMKEY"))
+                        {
+                            fprintf(fp,"\n%s\n","BEGIN  SHMK");
+                            fprintf(fp,"SHMKEY_MB%15s\n",sgRcd_data[i].slRcd_fld_data);
+                            fprintf(fp,"%s\n","END   SHMK");
+                        }
+                        else
+                        {
+                            strcat(alTmpstr,sgRcd_data[i].slRcd_fld_name);
+                            strcat(alTmpstr,"      ");
+                            strcat(alTmpstr,sgRcd_data[i].slRcd_fld_data);
+                            strcat(alTmpstr,"\n");
+                        }
+                    }
+                }
+            } 
+            fprintf(fp,"\n%s\n%s%s\n","BEGIN BMQ",alTmpstr,"END  BMQ");
+            memset(alTmpstr,0x00,sizeof(alTmpstr));
+        }
+        al_count=0;
+        fclose(fp);        
+        swVdebug(2,"S0630:写入%s文件成功",alFname);
+    }
+    else if(strcmp(tabname,"BMQ_CHK_CLIP_DENY")==0||strcmp(tabname,"BMQ_CHK_CLIP_ALLOW")==0)
+    {
+        sprintf(alFname,"%s/bmq/etc/%s",getenv("HOME"),"bmq.ini");
+        /*sprintf(alFname,"%s/hxz/bmq/%s",getenv("SWITCH_DIR"),"bmq.ini");*/
+        swVdebug(2,"S0340:打开要写入文件%s",alFname);
+        fp = fopen(alFname, "a+");    
+        if (!fp)
+        {
+            swVdebug(2,"S0350:[错误/文件]打开要写入文件%s出错",alFname);
+            //exit(FAIL);
+            return -1;
+        }
+        swVdebug(2,"S0360:开始写入文件");
+        if(strcmp(tabname,"BMQ_CHK_CLIP_DENY")==0)
+        {
+            fprintf(fp,"%s\n","BEGIN DENYCLI");
+        }
+        else if(strcmp(tabname,"BMQ_CHK_CLIP_ALLOW")==0)
+        {
+            fprintf(fp,"%s\n","BEGIN ALLOWCLI");
+        }
+        for(j=0;j<rcd_count;j++)
+        {
+            for(i=0;i<=al_count;i++)
+            {
+                if(strlen(sgRcd_data[i].slRcd_fld_name)==0)
+                {break;}
+                else
+                {
+                    if(sgRcd_data[i].slRcd_num==j)
+                    { 
+                        fprintf(fp,"%s\n",sgRcd_data[i].slRcd_fld_data);
+                    }
+                }
+            }
+        }
+        if(strcmp(tabname,"BMQ_CHK_CLIP_DENY")==0)
+        {
+            fprintf(fp,"%s\n","END   DENYCLI");
+        }
+        else if(strcmp(tabname,"BMQ_CHK_CLIP_ALLOW")==0)
+        {
+            fprintf(fp,"%s\n","END   ALLOWCLI");
+        }
+        al_count=0;
+        fclose(fp); 
+        swVdebug(2,"S0370:写入%s文件成功",alFname);    
+    }
+    return 0;
+}
+char*   strs_Trim(char* s)
+{
+    long    lLen;
+    register    i, k;
+
+    /*  输入为空则直接返回*/
+    if(!s) return NULL;
+
+    lLen = (long)strlen(s);
+    for(i = 0, k = 0; i < lLen; i++)
+    {
+        if(' ' != s[i] && 9 != s[i] && 10 != s[i] && 13 != s[i])
+            s[k++] = s[i];
+    }
+    if(k != lLen)
+        s[k] = 0;
+    return s;
+}
+int swFile_load2(char *pTblName,char *pSql, char *pCfg)
+{
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    char sql[1024];     /* 表名 */   
+    char szAllColoms[1024*4];
+    EXEC SQL END DECLARE SECTION;  
+
+    FILE *fp = NULL;
+    char sCfg[128];
+    memset(sql,0,sizeof(sql));
+    memset(sCfg,0,sizeof(sCfg));
+    strcpy(sql,pSql);
+    
+
+    sprintf(sCfg,"%s/switch/etc/config/%s",getenv("HOME"),pCfg);
+    fp = fopen(sCfg,"w");
+    if( fp == NULL)
+    {
+        swVdebug(2,"S0020:打开文件【%s】失败", sCfg);
+        return -1;
+    }
+
+    swVdebug(3,"开始处理sql[%s]cfg[%s]",sql,pCfg);
+
+    EXEC SQL PREPARE select_statement FROM :sql;
+    EXEC SQL DECLARE author_cursor CURSOR FOR select_statement;
+    EXEC SQL OPEN author_cursor;
+    while(1)
+    {
+            memset(szAllColoms,0x00,sizeof(szAllColoms));
+            EXEC SQL FETCH author_cursor INTO :szAllColoms;
+            if(sqlca.sqlcode == SQLNOTFOUND) 
+            {
+                    EXEC SQL CLOSE author_cursor;
+                    break;
+            }
+            strs_Trim(szAllColoms);
+            fprintf(fp, "%s\n",szAllColoms);
+    }
+    fclose(fp);
+
+    return 0;
+}
+//int swFile_load(int num,char **name)
+int swFile_load(int num,char name[][50])
+{
+    /* 定义宿主变量 */
+    EXEC SQL BEGIN DECLARE SECTION;
+    char alTbcursor[256];     /* 表名 */   
+    char alFldcursor[256];    /* 域名 */   
+    char alFldtypecursor[20];    /* 域类型 */   
+    char alDatacursor[8000+1];   /* 域值 */   
+    char alSqlstr[500];       /* 动态sql */
+    char alSelect_stmt[500];   /* 动态sql */
+    char alSelect_stmt1[500]; /* 动态sql */
+    short alRcd_count=0;            /* 记录数 */
+    int al_count = 0;            /* 总记录数 */
+    short  igTmp=0;
+    EXEC SQL END DECLARE SECTION;  
+
+    int i=0,j=0;  
+    if(num!= 2) 
+    {  
+        fprintf(stderr, "使用方法: swLoadfile 表名(单张表)\n");          
+        fprintf(stderr, "使用方法: swLoadfile all（全部表）\n");
+        fprintf(stderr, "使用方法: swLoadfile switch（switch相关表）\n");
+        fprintf(stderr, "使用方法: swLoadfile bmq（bmq相关表）\n");
+        //     exit(-1);
+        return -1;
+    }
+
+
+    char *psql  = NULL;
+    char *pcfg  = NULL;
+    int iRet = 0;
+    if(strcmp(name[1],"AG_LOG_MAP") == 0)
+    {
+            psql="select TRANCODE||'|'||TRANNAME||'|'||TRANTYPE||'|'||BUSITYPE||'|'||SERIALNO||'|'||FMLNAME||'|'||LOGNAME||'|'||MA  from ag_log_map";
+            pcfg = "AG_LOG_MAP.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+    else if(strcmp(name[1],"AG_PROVINCE") == 0)
+    {
+            psql="select NEWBARNCH||'|'||OLDBARNCH  from AG_PROVINCE";
+            pcfg = "AG_PROVINCE.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+    else if(strcmp(name[1],"AG_ERR_CHG") == 0)
+    {
+            psql="select SYSID||'|'||HOSTERRCODE||'|'||FRONTERRCODE||'|'||ERRMSG from AG_ERR_CHG";
+            pcfg = "AG_ERR_CHG.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+    else if(strcmp(name[1],"AG_TRANS_CFG") == 0)
+    {
+
+           psql="select SYS_ID||'|'||TRAN_CODE||'|'||CHANNEL_ID||'|'||TRAN_PRI||'|'||TRAN_STATUS||'|'||TRANING_MAX||'|'||CASH_FLAG||'|'||CERT_FLAG||'|'||TRAN_TYPE||'|'||SERVERNAME from AG_TRANS_CFG";
+            pcfg = "AG_TRANS_CFG.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+    else if(strcmp(name[1],"AG_RULE_CODE") == 0)
+    {
+            psql="select CARDFLAG||'|'||CARDLEN||'|'||CARDBIN||'|'||COMPLEN||'|'||STARTPOS||'|'||INTERPOS||'|'||INTERLEN||'|'||RULE from AG_RULE_CODE";
+            pcfg = "AG_RULE_CODE.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+    else if(strcmp(name[1],"AG_SYS_CFG") == 0)
+    {
+            psql = "select SYS_ID||'|'||SYS_STATUS||'|'||SYS_TRANING_MAX||'|'||SYS_TRN_CTR1||'|'||SYS_TRN_CTR2||'|'||SYS_TRN_CTR3||'|'||SYS_TRN_CTR4||'|'||SYS_TRN_CTR5||'|'||SYS_BMQID||'|'||SYSN_AME||'|'||IP||'|'||PORT||'|'||TIMEOUT||'|'||ULEFLAG||'|'||MSGTYPE||'|'||SHAREFLAG||'|'||MAPSYS from AG_SYS_CFG";
+            pcfg = "AG_SYS_CFG.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+    else if(strcmp(name[1],"AG_DETAIL_VIEW") == 0)
+    { 
+            psql = "SELECT SECNAME||'|'||DETCODE||'|'||DETINFO from AG_DETAIL_VIEW";
+            pcfg = "AG_DETAIL_VIEW.CFG";
+            iRet =  swFile_load2(name[1],psql,pcfg);
+            return iRet;
+    }
+
+#if 0
+    /* 打开数据库 */
+    if(swDbopen() != SUCCESS)
+    {
+        swVdebug(2,"S0030: [错误/数据库] swDbopen()打开数据库出错");
+        exit(FAIL);
+    }
+    swVdebug(2,"S0040: 打开数据库成功");
+#endif
+    /* 定义游标（获取系统表usr用户下所有表名）*/
+    swVdebug(2,"S0050: 定义游标（获取系统表usr用户下所有表名）");
+    EXEC SQL DECLARE MXCUR CURSOR FOR
+        SELECT DISTINCT TABLE_NAME FROM tabs where TABLE_NAME like 'TBL%' or  TAB_NAME like 'AG%';
+    if (sqlca.sqlcode )
+    {
+        swVdebug(2,"S0060: [错误/游标] Declare cursor error , sqlcode = [%d]",sqlca.sqlcode);
+        //exit(FAIL);
+        return -1;
+    }
+    /* 开始用游标获得表名明细,并和需处理表进行匹配 */
+//    sgRcd_data = (struct slRcd *)malloc(MAXCOUNT*sizeof(struct slRcd));
+    sgRcd_data = (struct slRcd *)malloc(sizeof(struct slRcd));
+    swVdebug(2,"S0070: 开始用游标获得表名明细,并与需处理表进行匹配");
+    for(j=0;j<TBNUM;j++)    
+    {   
+        /* 打开alTbcursor游标 */
+        EXEC SQL OPEN MXCUR;  
+        if (sqlca.sqlcode)
+        {
+            swVdebug(2,"S0080: [错误/游标] Open cursor error , sqlcode = [%d]", sqlca.sqlcode);
+            //exit(FAIL);
+            return -1;
+        }
+
+        /* 找出需处理表 */
+//        swVdebug(2,"----num[%d]------name[1]=[%s]---------",num,name[1]);
+        while(1)
+        {
+            memset(alTbcursor,0x00,sizeof(alTbcursor));
+            EXEC  SQL  FETCH  MXCUR   into :alTbcursor;
+            if ( sqlca.sqlcode == SQLNOTFOUND )
+            { 
+//                swVdebug(2,"S0090: 处理完毕！");
+                break;
+            }
+            _swTrim(alTbcursor); 
+            //swVdebug(2,"-----------alTbcursor[%s]---------",alTbcursor);
+            //swVdebug(2,"-----------alTb_name[%d]=[%s]--------",j,alTb_name[j]);
+
+            /* 匹配表名 */
+            if(strcmp(alTbcursor,alTb_name[j])==0)
+            { 
+                //swVdebug(2,"-----------FIND-------------");
+                if(num == 2) 
+                {
+                    ilFlag = 0;
+                    if(strcmp(name[1],"all")==0)            	
+                    {}
+                    else if(strcmp(name[1],"switch")==0)   
+                    {
+                        for(i=0;i<SWTTBNUM;i++)
+                        {
+                            if(strcmp(alTb_name[j],alSwttabname[i])==0) 
+                            {
+                                ilFlag=1;
+                                break;
+                            }
+                        }	              	
+                        if(ilFlag!=1)
+                            continue;
+                    }         	
+                    else if(strcmp(name[1],"bmq")==0)   
+                    {
+                        for(i=0;i<BMQTBNUM;i++)
+                        {
+                            if(strcmp(alTb_name[j],alBmqtabname[i])==0) 
+                            {
+                                ilFlag=1;
+                                break;
+                            }
+                        }	              	
+                        if(ilFlag!=1)
+                            continue;
+                    }
+                    else
+                    {
+                        /*判断输入表是否属于需导入的表*/
+                        for(i=0;i<TBNUM;i++)
+                        { if(strcmp(alTb_name[i],name[1])==0)          
+                            { 
+                                i=999; 
+                                break;
+                            }
+                        }
+                        if(i==999)
+                        {
+                            /*判断所处理的表是否属于bmq类表*/
+                            for(i=0;i<BMQTBNUM;i++)
+                            {
+                                if(strcmp(alBmqtabname[i],name[1])==0) 
+                                {
+                                    ilFlag=1;
+                                    break;
+                                }
+                            }
+                            if(strcmp(alTb_name[j],name[1])==0) 
+                            {
+                            }
+                            else if(ilFlag==1)
+                            {
+                                for(i=0;i<BMQTBNUM;i++)
+                                {
+                                    if(strcmp(alBmqtabname[i],alTb_name[j])==0) 
+                                    {
+                                        ilFlag=2;
+                                        break;
+                                    }
+                                }
+                                if(ilFlag!=2)
+                                    continue;
+
+                            }
+                            else
+                                continue;  
+                        }
+                        else
+                        {
+                            swVdebug(2,"S0100: 输入表名%s无效！",name[1]);
+                            //exit(FAIL);
+                            return -1;
+                        }
+                        ilFlag=0;
+                    }
+                }
+
+                swVdebug(2,"S0110: 开始处理%s表！",alTb_name[j]);
+                /* 取得匹配表名相关域名(alFldcursor) */
+                memset(alSqlstr,0x00,sizeof(alSqlstr));
+                /* 组织动态sql */
+                strcpy(alSqlstr,"select column_name,data_type from user_tab_columns WHERE table_name='");
+                strcat(alSqlstr,alTb_name[j]);
+                strcat(alSqlstr,"' order by column_id");
+                swVdebug(2,"S0120: SQL: %s",alSqlstr);
+                /* 动态sql语句选取(alFldcursor)域相应值 */
+                memset(alSelect_stmt,0x00,sizeof(alSelect_stmt));
+                EXEC SQL PREPARE alSelect_stmt FROM :alSqlstr; 
+                EXEC SQL DECLARE MXCUR2 CURSOR for
+                    alSelect_stmt;
+                if (sqlca.sqlcode )
+                {
+                    swVdebug(2,"S0130: [错误/游标] Declare cursor error , sqlcode = [%d]",sqlca.sqlcode);
+                    //exit(FAIL);
+                    free(sgRcd_data);
+                    return -1;
+                }
+                /* 打开alFldcursor游标 */
+                EXEC SQL OPEN MXCUR2;  
+                if (sqlca.sqlcode )
+                {
+                    swVdebug(2,"S0140: [错误/游标] Open cursor error , sqlcode = [%d]",sqlca.sqlcode);
+                    //exit(FAIL);
+                    free(sgRcd_data);
+                    return -1;
+                }
+                /* 相关表记录数清0 */
+                alRcd_count=0;
+                /* 取出域名明细 */
+//                memset((char *)sgRcd_data,0x00,MAXCOUNT*sizeof(struct slRcd));
+                memset((char *)sgRcd_data,0x00,sizeof(struct slRcd));
+                igRcd_fld_count=0;
+                swVdebug(2,"S0150: 动态sql语句选取(alFldcursor)域相应值");
+                while(1)   
+                {
+                    igRcd_fld_count++;
+                    memset(alFldtypecursor,0x00,sizeof(alFldtypecursor));
+                    EXEC  SQL  FETCH  MXCUR2 into :alFldcursor,:alFldtypecursor;
+                    _swTrim(alFldcursor);
+                    _swTrim(alFldtypecursor);
+                    /*swVdebug(2,"S9999: [%s]", alFldcursor); */
+                    if ( sqlca.sqlcode == SQLNOTFOUND )
+                    {
+                        break;
+                    }
+                    if (sqlca.sqlcode )
+                    {
+                        swVdebug(2,"S0160: [错误/游标] MXCUR2 Fetch error , sqlcode = [%d]", sqlca.sqlcode);
+                        //exit(FAIL);
+                        free(sgRcd_data);
+                        return -1;
+                    }
+                    if(strcmp(alFldcursor,"CONFIG_ID")==0||strcmp(alFldcursor,"MSG_TYPE_ID")==0||strcmp(alFldcursor,"FMT_GRP_ID")==0||strcmp(alFldcursor,"ROUTE_GRP_ID")==0||strcmp(alFldcursor,"MON_MSG_TYPE")==0||strcmp(alFldcursor,"TAB_ID_EXT")==0)              
+                    {
+                        igRcd_fld_count =igRcd_fld_count -1;
+                        continue;
+                    }
+                    memset(alSqlstr,0x00,sizeof(alSqlstr));
+                    memset(alSelect_stmt1,0x00,sizeof(alSelect_stmt1));
+                    /*if(strstr(alFldtypecursor,"CHAR"))
+                      {
+                      strcpy(alSqlstr,"select ");
+                      strcat(alSqlstr,alFldcursor);
+                      }
+                      else
+                      {  
+                      strcpy(alSqlstr,"select ");
+                      strcat(alSqlstr,"to_char(");
+                      strcat(alSqlstr,alFldcursor);
+                      strcat(alSqlstr,")");
+                      }*/
+
+                    if(strcmp("OPER_IN",alFldcursor)== 0 || strcmp("EVENT_ID",alFldcursor)== 0 
+                            || strcmp("REC_ID",alFldcursor)== 0 || strcmp("REC_UPD_USR_ID",alFldcursor)== 0
+                            || strcmp("REC_UPD_TS",alFldcursor)== 0 || strcmp("REC_CRT_TS",alFldcursor)== 0
+                            || strcmp("MAX_BITMAP",alFldcursor)== 0 || strcmp("MIN_BITMAP",alFldcursor)== 0
+                            || strcmp("BITMAP_VFY_IN",alFldcursor)== 0 )
+                    {
+                        igRcd_fld_count =igRcd_fld_count -1;
+                        continue; 
+                    }
+
+                    strcpy(alSqlstr,"select ");
+                    strcat(alSqlstr,alFldcursor);
+                    strcat(alSqlstr," from ");
+                    strcat(alSqlstr,alTb_name[j]);	  
+                    if(strcmp(alTbcursor,"SWT_SYS_MSGPACK")==0)        	    
+                    {
+                        strcat(alSqlstr," order by msg_type,fld_id");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_BMQ_MBX_GRP_CFG")==0)        	    
+                    {
+                        strcat(alSqlstr," order by rowid");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_TRAN_CTL")==0)        	    
+                    {
+                        strcat(alSqlstr," order by SYS_ID,TRAN_CODE asc");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_8583_CFG")==0)        	    
+                    {
+                        strcat(alSqlstr," order by TAB_ID,FLD_ID asc");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_8583_GRP")==0)        	    
+                    {
+                        strcat(alSqlstr," order by TAB_ID asc");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_FMT_M")==0)        	    
+                    {
+                        strcat(alSqlstr," order by rowid asc");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_ROUTE_M")==0)        	    
+                    {
+                        strcat(alSqlstr," order by route_grp asc");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_FLOW_CD")==0)        	    
+                    {
+                        strcat(alSqlstr," order by rowid asc");
+                    }
+                    else if(strcmp(alTbcursor,"TBL_MGM_FMT_GRP")==0)        	    
+                    {
+                        strcat(alSqlstr," order by rowid asc");
+                    }
+
+
+
+
+                    /*memset(alFldtypecursor,0x00,sizeof(alFldtypecursor));*/
+                    /* 动态sql语句选取(alFldcursor)域相应值 */
+                    swVdebug(2,"S0170: SQL: %s",alSqlstr);
+                    EXEC SQL PREPARE alSelect_stmt1 FROM :alSqlstr; 
+                    EXEC SQL DECLARE MXCUR1 CURSOR for
+                        alSelect_stmt1;
+                    if (sqlca.sqlcode )
+                    {
+                        swVdebug(2,"S0180: [错误/游标] Declare cursor error , sqlcode = [%d]",sqlca.sqlcode);
+                        free(sgRcd_data);
+                        return -1;
+                    }   
+                    /* 打开alDatacursor 游标 */
+                    EXEC SQL OPEN MXCUR1;  
+                    if (sqlca.sqlcode )
+                    {
+                        swVdebug(2,"S0190: [错误/游标] Open cursor error , sqlcode = [%d]",sqlca.sqlcode);
+                        free(sgRcd_data);
+                        return -1;
+                    }
+                    alRcd_count=0;              
+                    /* 取出域值明细 */
+                    while(1)   
+                    {
+                        memset(alDatacursor,0x00,sizeof(alDatacursor));
+                        EXEC  SQL  FETCH  MXCUR1 into :alDatacursor:igTmp;
+                        if ( sqlca.sqlcode == SQLNOTFOUND )
+                        {
+                            break;
+                        }
+                        else if (sqlca.sqlcode )
+                        {
+                            swVdebug(2,"S0200: [错误/游标] MXCUR2 Fetch error , sqlcode = [%d]", sqlca.sqlcode);
+                            free(sgRcd_data);
+                            return -1;
+                        } 
+                        sgRcd_data[al_count].slRcd_num=alRcd_count;
+                        /*add by hxz 20070123*/
+                        _swTrim(alFldcursor);
+                        _swTrim(alDatacursor);
+                        memcpy(sgRcd_data[al_count].slRcd_fld_name,alFldcursor,strlen(alFldcursor));
+                        memcpy(sgRcd_data[al_count].slRcd_fld_data,alDatacursor,strlen(alDatacursor));
+                        //                swVdebug(3,"S0205: fld_name=[%s],fld_data=[%s],alRcd_count=%ld,al_count=%ld",sgRcd_data[al_count].slRcd_fld_name,sgRcd_data[al_count].slRcd_fld_data,alRcd_count,al_count);
+                        alRcd_count++;
+                        al_count++;
+                        sgRcd_data = (struct slRcd *)realloc(sgRcd_data, (al_count+1)*sizeof(struct slRcd));
+                        memset(sgRcd_data[al_count].slRcd_fld_name,0,FLDLEN);
+                        memset(sgRcd_data[al_count].slRcd_fld_data,0,STRLEN);
+                    }      
+                    /* 关闭alDatacursor 游标 */
+                    EXEC SQL CLOSE MXCUR1;              
+                } 
+                /* 关闭alFldcursor游标 */
+                EXEC SQL CLOSE MXCUR2;   
+                /* 调用swFile_format()(数据库数据格式调整,并写入相关配置管理文件) */
+                swVdebug(2,"S0210: %s调用swFile_format(),al_count=%d,alRcd_count=%d",alTb_name[j],al_count,alRcd_count);
+                ilRc = swFile_format(al_count,alRcd_count,alTb_name[j]);
+                if(ilRc!=0)
+                {
+                    swVdebug(2,"S9998: [错误/文件] 处理%s出错！",alTb_name[j]);
+                }
+                al_count=0;
+                alRcd_count=0;
+                igRcd_fld_count=0;
+                //swVdebug(2,"----------END FIND-------------");
+                
+
+            }
+        }
+        //swVdebug(2,"--------------3-------");
+        /* 关闭alTbcursor游标 */
+        EXEC SQL CLOSE MXCUR;
+    }
+
+    al_count=0;
+    alRcd_count=0;
+    igRcd_fld_count=0;
+    free(sgRcd_data);
+    return(0);
+}
+
+int swLoop_for_update_cfg()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char alTab_Name[51];  
+    char Hostname[41];
+    char Time_Now[14+1];
+    char type_flag[2];
+    EXEC SQL END DECLARE SECTION; 
+
+    int ilRc = 0;
+
+    memset(alTab_Name,0,sizeof(alTab_Name));
+    memset(Hostname,0,sizeof(Hostname));
+    memset(Time_Now,0,sizeof(Time_Now));
+
+    gethostname(Hostname, sizeof(Hostname));
+    _swTrim(Hostname);
+
+
+    while(1)
+    {
+
+        EXEC SQL SELECT 1 FROM DUAL;
+        if(sqlca.sqlcode){
+            swDbclose();
+            swVdebug(2,"DB error sqlcode[%d][%s]",sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            if(swDbopen() != SUCCESS)
+            {
+                swVdebug(2,"S0030: [错误/数据库] swDbopen()打开数据库出错");
+            }
+            sleep(10);
+            continue;
+        }
+
+        GetFormatTime(Time_Now,sizeof(Time_Now),"%Y%m%d%H%M%S");
+
+//        swVdebug(2,"SELECT TAB_NAME FROM TBL_CTRL_CFG_UPDATE WHERE HOST_NAME = '%s' AND UPDATE_FLAG = '0' AND EFCT_TIME <='%s'",Hostname,Time_Now);
+        swVdebug(2,"SELECT TAB_NAME,HOST_NAME,TYPE_FLAG FROM TBL_CTRL_CFG_UPDATE WHERE UPDATE_FLAG = '0' AND EFCT_TIME <='%s'",Time_Now);
+        memset(Hostname,0,sizeof(Hostname));
+/*
+        EXEC SQL DECLARE CUR_CTRL_CFG_UPDATE CURSOR FOR
+            SELECT distinct TAB_NAME
+            FROM TBL_CTRL_CFG_UPDATE 
+            WHERE HOST_NAME = :Hostname AND UPDATE_FLAG = '0' AND EFCT_TIME <=:Time_Now;
+*/
+        EXEC SQL DECLARE CUR_CTRL_CFG_UPDATE CURSOR FOR
+            SELECT distinct TAB_NAME,HOST_NAME,TYPE_FLAG
+            FROM TBL_CTRL_CFG_UPDATE 
+            WHERE UPDATE_FLAG = '0' AND EFCT_TIME <=:Time_Now;
+        if (sqlca.sqlcode )
+        {
+            swVdebug(2,"S0073: [错误/游标] declare cursor error , sqlcode = [%d]", sqlca.sqlcode);
+            continue;
+        }
+        EXEC SQL OPEN CUR_CTRL_CFG_UPDATE;  
+        if (sqlca.sqlcode)
+        {
+            swVdebug(2,"S0080: [错误/游标] Open cursor error , sqlcode = [%d]", sqlca.sqlcode);
+            continue;
+        }
+        /* 找出需处理表 */
+        int count = 0;
+        pstHost = (struct _stHost *)malloc(sizeof(struct _stHost));
+        while(1)
+        {
+            char aTbl_Name[2][50];
+            int idbcfgflag=0;
+            int iswcfgflag=0;
+            memset(alTab_Name,0,sizeof(alTab_Name));
+            EXEC  SQL  FETCH  CUR_CTRL_CFG_UPDATE  into :alTab_Name,Hostname,type_flag;
+            if ( sqlca.sqlcode == SQLNOTFOUND )
+            { 
+//                swVdebug(2,"not found break;Time[%s]",Time_Now);
+                break;
+            }
+
+            _swTrim(alTab_Name);
+            _swTrim(Hostname);
+            _swTrim(type_flag);
+            swVdebug(2,"开始处理hostname=[%s]Table[%s]Time[%s]",Hostname, alTab_Name,Time_Now);
+
+            memset(aTbl_Name,0,sizeof(aTbl_Name));
+            strcpy(aTbl_Name[1],alTab_Name);
+            strtoupper(aTbl_Name[1]);
+            strcpy(aTbl_Name[0],alTab_Name);
+
+            ilRc=swFile_load(2,aTbl_Name);
+            if(ilRc!=0)
+            {
+                swVdebug(2,"S9999: [错误/函数] 调用swFile_load函数出错！!!!!!!!!!!!!!!!!!!!!!");
+                continue;
+            }
+
+            GetFormatTime(Time_Now,sizeof(Time_Now),"%Y%m%d%H%M%S");
+            EXEC SQL UPDATE tbl_ctrl_cfg_update SET update_flag = '1', update_time=:Time_Now 
+                WHERE host_name=:Hostname and tab_name=:alTab_Name and update_flag = '0';
+            if ( sqlca.sqlcode )
+            {
+                swVdebug(2, "%s[%d] 更新数据库tbl_ctrl_cfg_update ERROR. sqlca[%d], sqlERR[%s]", __FILE__, __LINE__,
+                        sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+            }
+
+            if(type_flag[0]  == '1')
+                    idbcfgflag = 1;
+            if(type_flag[0]  == '0')
+                    iswcfgflag = 1;
+
+            int i = 0;
+            int isfd=0;
+            for(i = 0; i <= count;i++)
+            {
+                if(strcmp(pstHost[i].hostname,Hostname)==0)
+                {
+                    if ( pstHost[i].idbcfgflag!=1)
+                        pstHost[i].idbcfgflag=idbcfgflag;
+                    if ( pstHost[i].iswcfgflag!=1)
+                        pstHost[i].iswcfgflag=iswcfgflag;
+                    isfd = 1;
+                    break;
+                }
+            }
+            if (isfd == 0)
+            {
+                strcpy(pstHost[count].hostname, Hostname);
+                pstHost[count].idbcfgflag=idbcfgflag;
+                pstHost[count++].iswcfgflag=iswcfgflag;
+                pstHost = (struct _stHost*)realloc(pstHost,(count)*sizeof(struct _stHost));
+                memset(pstHost[count].hostname,0,sizeof(pstHost[count].hostname));
+                pstHost[count].iswcfgflag=0;
+                pstHost[count].idbcfgflag=0;
+            }
+        }
+
+        EXEC SQL CLOSE CUR_CTRL_CFG_UPDATE;  
+        EXEC SQL COMMIT;
+
+        int i = 0;
+        for(i = 0; i < count; i++)
+        {
+                strtoupper(pstHost[i].hostname);
+                setCfgFlag(pstHost[i].hostname,pstHost[i].iswcfgflag,pstHost[i].idbcfgflag);
+        }
+        sleep(60);
+    }
+
+    return 0;
+}
+
+int setCfgFlag(char *pHostName,int iswCfgFlag,int idbCfgFlag)
+{
+    FILE *fp = NULL;
+    char aCfg[128];
+
+    memset(aCfg, 0, sizeof(aCfg));
+    
+    sprintf(aCfg,"%s/switch/etc/config/%s.CFG",getenv("HOME"),pHostName);
+
+    if ((fp = fopen(aCfg, "w")) == NULL) return -1; 
+    fprintf(fp,"SWSHMFLAG=%d\n",iswCfgFlag);
+    fprintf(fp,"DBSHMFLAG=%d\n",idbCfgFlag);
+    fclose(fp);
+    return 0;
+}
+
+

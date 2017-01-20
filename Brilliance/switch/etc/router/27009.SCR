@@ -1,0 +1,20 @@
+ROUTEDESC=手机银行向支付平台发送请求交易
+[ROUTE]
+10 IF GT(LEN(FML(PTERRFLAG)),0) THEN GOTO 40
+
+#add by weizheng 20140424
+#发送方向标志   1：发支付系统;只要不是 2 就发送老支付
+#              2：发第三方支付, 
+
+#发送三方支付
+11 IF SEQ(FML(FXBZ),2 ) THEN GOTO 30
+#发原支付系统
+12 CALL 121 WITH REVMODE 1
+13 GOTO 40
+
+
+30 CALL 121 WITH REVMODE 1
+40 SEND 25 WITH END
+
+100 SET retcode = 20009997
+110 SEND 25 WITH END, GROUP 23999

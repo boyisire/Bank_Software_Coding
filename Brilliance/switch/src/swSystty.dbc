@@ -1,0 +1,887 @@
+/* 头文件定义 */
+#include  "switch.h"
+#include  <curses.h> 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include  "swNdbstruct.h"
+#include  "swShm.h"
+#define LINES 18
+#define BUFLEN 1024
+#define CTRKEY_RIGHT	KEY_RIGHT
+#define CTRKEY_LEFT	KEY_LEFT
+#define max(x,y) (((x) > (y))?(x):(y))
+EXEC SQL INCLUDE sqlca;
+
+
+/* 端口配置结构 */
+static struct swt_sys_port
+{
+  char  addr[16];
+  long  port;
+}sgSwt_sys_port;
+
+char   cgDebug;
+
+struct swt_sys_msgpack *psgSwt_sys_msgpack; 
+struct swt_sys_ttytype *psgSwt_sys_ttytype;
+static int  igCount=0;
+static char agSendbuf[50];
+static int  igSock;
+WINDOW *pgHeadwin,*pgMainwin,*pgMsgwin;
+int igFld_start = 0;
+char agTitle[BUFLEN];
+char agDisplay[LINES + 1][BUFLEN];
+int igLinecount = 0;
+int igOffset = 0;
+int igTermid = 0;
+
+int swQuit(int sockfd);
+void initial();
+int swMainwin();
+int swGetField(char *aBuffer,int n,char *aField,char Seperator);
+int swUdpCreate(int *Port);
+int swLoadmsgpack1(short iMsgtype,int *iCount);
+int swLoadsysttytype( short *iTerm_num);
+void swUdpQuit(int sig);
+int _swUDPGet_tty(int sock,char *aAddr,int *iPort,char *aMsgpack,unsigned int *iMsglen);
+int swSetdata(char * aBuffer);
+int swGetmove_num(int ilFld_start,int *iMove_num);
+int swRedrawhead();
+int swProcesskey();
+int swShowdata(char aBuffer[][BUFLEN],int iOffset);
+extern int _swExpN2T(char *aNstr,char *aTstr);
+
+/**************************************************************
+ ** 函数名      ： main
+ ** 功  能      ： 主函数
+ ** 作  者      ： nh
+ ** 建立日期    :  2001/12/7
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      :
+ ***************************************************************/
+int main( int argc,char **argv)
+{
+  char  alSendbuf[50],alMsgbuf[1024],alTmpbuf[1024];
+  int   i,j,ilRc,ilSpace;
+  int   ilSendlen;
+  unsigned int ilCount,ilMsglen;
+  int ilTmp;
+  int   ilLine=0;
+  char  alShowword[256];
+  char  alBuf[1024],alFormat[20],alFldbuf[256];
+  struct hostent *hostent;
+  struct msgpack slMsgpack;
+  struct sockaddr_in sockTmp;
+  char  hostname[100];
+  char alAddr[16];
+  int  ilPort;
+  char alPort[6],alIP[16];
+  fd_set inSet;
+  int ilMaxfd = 0;
+  memset(agDisplay,0x00,sizeof(agDisplay));
+  memset(agTitle,0x00,sizeof(agTitle));
+
+  memset(alPort,0x00,sizeof(alPort));
+  memset(alIP,0x00,sizeof(alIP));
+
+  /* 设置调试程序名称 */
+  memset(agDebugfile,0x00,sizeof(agDebugfile));
+  strcpy(agDebugfile,"swSystty.debug");
+  
+    /* 读取DEBUG标志 */
+  if((cgDebug = _swDebugflag("swSystty")) == FAIL)
+  {
+    fprintf(stderr,"读取DEBUG标志出错!");
+    exit(FAIL);
+  }
+
+  /* 读取终端类型表 */
+  ilRc = swLoadsysttytype(&ilCount);
+  if (ilRc)
+  {
+    swVdebug(1,"S0010: 预读终端配置表出错");
+    exit(0);
+  }
+  swVdebug(2,"S0020: 预读终端配置表成功");
+
+  if(argc != 2)
+  {
+    printf("使用方法:  swSystty  报文类型ID号\n");
+    for(i=0;i<ilCount;i++)
+    {
+      printf("%12d:	%s\n",psgSwt_sys_ttytype[i].Term_id,psgSwt_sys_ttytype[i].message);
+    }
+    exit(0);
+  }
+
+  /*取得并判断监控报文类型*/
+  i=0;
+  while(1)
+  {
+    if(psgSwt_sys_ttytype[i].Term_id == atoi(argv[1]))
+    {
+      swVdebug(2,"S0030: 输入的报文类型正确");
+      break;
+    }
+    i++;
+    if(i>ilCount)
+    {
+      printf("注意:  输入的报文类型不正确,请直接输入swSystty可查看!\n");
+      exit(0);
+    }
+  }
+  igTermid=atoi(argv[1])-1;
+
+  /* 初始化共享内存指针 */
+  ilRc = swShmcheck(); 
+  if (ilRc != SUCCESS)
+  {
+    swVdebug(0,"S0040: [错误/共享内存] 初始化共享内存指针失败");
+    exit(FAIL);
+  }
+  swVdebug(2,"S0050: 初始化共享内存成功");
+  
+  /*从共享内存中读取服务端口配置*/
+  ilRc = swShmselect_swt_sys_config(&sgSwt_sys_config);
+  if (ilRc)
+  {
+    swVdebug(1,"S0060 [错误/共享内存] 读取共享内存中端口出错");
+    exit(FAIL);
+  }
+  swVdebug(2,"S0060: 读取系统配置信息成功"); 
+
+  strcpy(sgSwt_sys_port.addr,sgSwt_sys_config.sysmonaddr);
+  sgSwt_sys_port.port = sgSwt_sys_config.sysmonport;
+
+  swVdebug(2,"S0070: 处理信号");
+
+  /* 处理信号 */
+  signal(SIGCLD,SIG_IGN);
+  signal(SIGQUIT,SIG_IGN);
+  /* signal(SIGHUP,SIG_IGN); */
+  signal(SIGTSTP,SIG_IGN);
+  
+  /* 创建UDP */
+  igSock = swUdpCreate(&ilTmp);
+  if(igSock < 0)
+  {
+    swVdebug(1,"S0080: [错误/函数调用] _swUDPCreate()函数,返回码=%d,创建socket出错",igSock);
+    exit(0);  
+  }
+  swVdebug(2,"S0090: 创建socket成功,sock=%d,port=%d",igSock,ilTmp);
+  sprintf(alPort,"%d",ilTmp);
+  swVdebug(2,"S0100: 创建socket成功,sock=%d,port=%s",igSock,alPort);
+  if(gethostname(hostname,sizeof(hostname)))
+  {
+    swDebug("S0120: gethostname取主机名出错");
+    swQuit(igSock);
+  }
+  if((hostent = gethostbyname(hostname))==NULL)
+  { 
+    swVdebug(1,"S0110: gethostbyname取主机信息出错");
+    printf("错误: gethostbyname取主机信息出错,请检查!\n");
+    /*swQuit(igSock);*/
+    close(igSock);
+    exit(-1);
+  }
+  swVdebug(2,"S0120: gethostbyname取主机信息成功");
+  memcpy(&sockTmp.sin_addr.s_addr,hostent->h_addr_list[0],hostent->h_length);
+  strcpy(alIP,(char *)inet_ntoa(sockTmp.sin_addr));
+  swVdebug(2,"S0130: 获得本机IP=%s PORT=%s!!!",alIP,alPort);
+
+  /*组包签退报文*/
+  memset(agSendbuf,' ',sizeof(agSendbuf));
+  memcpy(agSendbuf,"B",1);
+  strncpy(agSendbuf+1,argv[1],strlen(argv[1]));
+  memcpy(agSendbuf+4,alIP,strlen(alIP));
+  memcpy(agSendbuf+19,alPort,strlen(alPort));
+  memcpy(agSendbuf+24,alPort,strlen(alPort));
+  agSendbuf[29]='\0';
+
+  ilRc = swMainwin();
+  if(ilRc == -1)
+  {
+    swVdebug(1,"S0140: 显示初始化窗口信息出错");
+    swQuit(igSock);
+  }
+  swVdebug(2,"S0150: 显示初始化窗口信息成功");
+  
+  signal(SIGINT,swUdpQuit);
+  /* add by zjj 2002.08.29 */
+  signal(SIGHUP,swUdpQuit);
+  signal(SIGTERM,swUdpQuit);
+  /* end add by zjj 2002.08.29 */
+  
+  /*组包 、发送签到报文*/
+  memset(&slMsgpack,0x00,sizeof(slMsgpack));
+  slMsgpack.sMsghead.iMsgtype = 903;
+
+  memset(alSendbuf,' ',sizeof(alSendbuf));
+  memcpy(alSendbuf,"A",1);  
+  strncpy(alSendbuf+1,argv[1],strlen(argv[1]));
+  memcpy(alSendbuf+4,alIP,strlen(alIP));
+  memcpy(alSendbuf+19,alPort,strlen(alPort));
+  memcpy(alSendbuf+24,alPort,strlen(alPort));
+  alSendbuf[29]='\0';
+
+  strcpy(slMsgpack.aMsgbody,alSendbuf);
+  slMsgpack.sMsghead.iBodylen = 29;
+  ilSendlen = slMsgpack.sMsghead.iBodylen + sizeof(struct msghead);
+  if(cgDebug >= 2)
+  {
+    swDebug("S0180: 发送报文体的内容为:%s长度为:%d",alSendbuf,ilSendlen);
+    swDebughex((char *)&slMsgpack,ilSendlen);
+  }
+
+  ilRc=_swUDPPut(igSock,sgSwt_sys_port.addr,sgSwt_sys_port.port,(char *)&slMsgpack,ilSendlen);
+  if(ilRc!=0)
+  {
+    printf("错误: 签到失败,请检查swSysmon进程是否正常运行!\n");
+    swVdebug(1,"S0160: 发送签到报文到IP[%s] PORT[%d]失败",sgSwt_sys_port.addr,sgSwt_sys_port.port);
+    swQuit(igSock);
+  }
+  swVdebug(2,"S0170: 发送签到报文到IP[%s] PORT[%d]成功",sgSwt_sys_port.addr,sgSwt_sys_port.port);
+  
+  /* 组织响应报文 */
+  memset(&slMsgpack,0x00,sizeof(slMsgpack));
+  slMsgpack.sMsghead.iMsgtype = 904;
+
+  memset(alTmpbuf,' ',sizeof(alSendbuf));
+  memcpy(alTmpbuf,alIP,strlen(alIP));
+  memcpy(alTmpbuf+15,alPort,strlen(alPort));
+  alTmpbuf[20]='\0';
+
+  strcpy(slMsgpack.aMsgbody,alTmpbuf);
+  slMsgpack.sMsghead.iBodylen = 20;
+
+  for (;;)
+  {
+    /* 通过UDP读取报文 */
+    memset(alAddr,0x00,sizeof(alAddr));
+    memset(alMsgbuf,0x00,sizeof(alMsgbuf));
+    ilPort=0;
+    FD_ZERO(&inSet);
+    FD_SET(fileno(stdin),&inSet);
+    FD_SET(igSock,&inSet);
+    ilMaxfd = max(fileno(stdin),igSock) + 1;
+    ilRc = select(ilMaxfd,&inSet,NULL,NULL,NULL);
+    if( ilRc < 0 )
+    {
+      if( errno == EINTR )
+        continue;
+      else
+      {
+        swVdebug(1,"S0180: zjj select error:[%s],at [%d] in [%s]",strerror(errno), __LINE__,__FILE__);
+        continue;
+      }
+    }
+    if (FD_ISSET(igSock,&inSet)) 
+    {
+      /* 处理UDP输入 */
+      swVdebug(2,"收到UDP报文!");    
+      ilMsglen = sizeof(alMsgbuf);
+      ilRc=_swUDPGet_tty(igSock,(char *)alAddr,&ilPort,alMsgbuf,&ilMsglen);
+      if(cgDebug >= 1)
+        swDebug("S0220: sock=%d addr=%s port=%d,len=%d",igSock,alAddr,ilPort,ilMsglen);
+      if (ilRc!=0)
+      {
+        printf("错误: 接收报文出错!\n");
+        swDebug("S0230: [错误/函数调用] _swUDPGet()函数,错误码=%d,读取信息失败",ilRc);
+        swQuit(igSock);
+      }
+      if(cgDebug >= 1) swDebug("S0240: 读取信息成功");
+      if(cgDebug >= 2) swDebug("S0250: read buffer:%s",alMsgbuf);
+      
+      if(!strncmp(alMsgbuf,"success",7))
+      {
+        memset(alBuf,0x00,sizeof(alBuf));
+        strcpy(alBuf,"新晨交换平台流水监控(V4.3.0)     状态: 正在监控          退出请按: CTRL+C ");
+        wmove(pgMsgwin,0,0);
+        wprintw(pgMsgwin,"-----------------------------------------");
+        wprintw(pgMsgwin,"---------------------------------------");
+        wmove(pgMsgwin,1,0);
+        mvwaddstr(pgMsgwin,1,0,alBuf);
+        wrefresh(pgMsgwin);
+        swVdebug(2,"S0190: 收到确认报文，开始接收监控信息");
+        continue;
+      } 
+      if(!strncmp(alMsgbuf,"QUIT",4))
+      {
+        memset(alBuf,0x00,sizeof(alBuf));
+        strcpy(alBuf,"新晨交换平台流水监控(V4.3.0)     状态: 已经退出        退出请按: CTRL+C");
+        wmove(pgMsgwin,0,0);
+        wprintw(pgMsgwin,"-----------------------------------------");
+        wprintw(pgMsgwin,"---------------------------------------");
+        wmove(pgMsgwin,1,0);
+        mvwaddstr(pgMsgwin,1,0,alBuf);
+        wrefresh(pgMsgwin);
+        swDebug("S0260: 收到确认报文，开始接收监控信息");
+        continue;
+      }
+      if(!strcmp(alMsgbuf,"alive"))
+      {
+        ilSendlen = slMsgpack.sMsghead.iBodylen + sizeof(struct msghead);
+        ilRc=_swUDPPut(igSock,sgSwt_sys_port.addr,sgSwt_sys_port.port,(char *)&slMsgpack,ilSendlen);
+        if(ilRc!=0)
+        {
+          swVdebug(2,"S0200: 发送响应报文到IP[%s] PORT[%d]失败",sgSwt_sys_port.addr,sgSwt_sys_port.port);
+          swQuit(igSock);
+        }
+        if(cgDebug >= 2) swDebughex((char *)&slMsgpack,ilSendlen);
+        swVdebug(2,"S0210: 发送响应报文到IP[%s] PORT[%d]成功",sgSwt_sys_port.addr,sgSwt_sys_port.port);
+        continue;
+      }
+
+      /*除去静态信息三行，动态信息２１共行,当显示信息超过２１行，新信息始终在
+　　  　２１行显示，屏幕滚动　*/
+     memset(alBuf,0x00,sizeof(alBuf));
+      ilRc = swGetField(alMsgbuf,1,alShowword,';');
+      for (i=0;i<igCount;i++)
+      {
+        ilSpace = 0;
+        switch (psgSwt_sys_msgpack[i].fld_alignment[0])
+        {
+          case '0':        /*左对齐 *//*modi by gxz 2003.1.7*/
+            sprintf(alFormat,"%s%d.%ds ","%-",
+              psgSwt_sys_msgpack[i].fld_len,
+              psgSwt_sys_msgpack[i].fld_len);
+            break;
+          case '1': /*右对齐 *//*modi by gxz 2003.1.7*/
+            sprintf(alFormat,"%s%d.%ds ","%",
+              psgSwt_sys_msgpack[i].fld_len,
+              psgSwt_sys_msgpack[i].fld_len);
+            break;
+          default:        /* 居中 */
+            ilSpace=psgSwt_sys_msgpack[i].fld_len - strlen(alShowword);
+            if (ilSpace <= 0)
+            {
+              sprintf(alFormat,"%s%d.%ds ","%",psgSwt_sys_msgpack[i].fld_len,psgSwt_sys_msgpack[i].fld_len);
+            }
+            else
+            {
+              for (j = 1;j<=(ilSpace/2);j++) strcat(alShowword," ");
+              sprintf(alFormat,"%s%d.%ds ","%",psgSwt_sys_msgpack[i].fld_len,
+                psgSwt_sys_msgpack[i].fld_len);
+            }
+            break;
+        } /* switch */
+        sprintf(alFldbuf,alFormat,alShowword);
+        swVdebug(2,"S0220: 要显示的域为:%s",alFldbuf);
+        strcat(alBuf,alFldbuf);
+        ilRc = swGetField(alMsgbuf,i+2,alShowword,';');
+      } /*for*/
+
+      swVdebug(2,"S0230: 要显示的内容为:%s",alBuf);
+      if (ilLine < LINES)  ilLine++;
+      igLinecount = ilLine;            
+      swSetdata(alBuf); 
+      swShowdata(agDisplay,igOffset); 
+    }/* end if */
+    if (FD_ISSET(fileno(stdin),&inSet))
+    {
+      /* 处理stdin输入 */
+      swVdebug(2,"收到键盘输入");
+      swProcesskey();
+    }
+  }/* for */
+}
+/**************************************************************
+ ** 函数名      ： swQuit
+ ** 功  能      ： 信号处理函数
+ ** 作  者      ：  
+ ** 建立日期    ： 
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ： 无
+***************************************************************/
+int swQuit(int sockfd)
+{
+  /* signal(SIGTERM,SIG_IGN); */
+
+  delwin(pgHeadwin);
+  delwin(pgMainwin);
+  delwin(pgMsgwin);
+  clear();
+  refresh();
+  endwin();
+  swVdebug(1,"S0240: swSystty已经关闭!");
+  close(sockfd);
+  exit(0);
+}  
+
+/**************************************************************
+ ** 函数名      ：swLoadsysttytype
+ ** 功  能      ：预读终端配置表
+ ** 作  者      ：
+ ** 建立日期    ：
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：psgSwt_sys_ttytype
+ ** 参数含义    ：无
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swLoadsysttytype( short *iTerm_num)
+{
+  FILE *fp;
+  int  i=0;
+  short ilRc;
+  char palFldvalue[10][iFLDVALUELEN];
+  
+  swVdebug(2,"S0250: [函数调用] swLoadsysttytype()");
+
+  /* 预读终端配置文件　*/
+  if ((fp = _swFopen("config/SWMONTERM.CFG","r")) == NULL)
+  {
+    swVdebug(1,"S0260: [错误/系统调用]fopen()函数,errno=%d[%s], swt_sys_ttytype文件打开出错",errno,strerror(errno));
+    fclose(fp);
+    return(-1);
+  }
+  
+  while ((ilRc = _swGetitemmode2(fp, palFldvalue,10)) == 0)
+  {
+    i++;
+    sgSwt_sys_ttytype.Term_id = atoi(palFldvalue[0]);
+    strcpy(sgSwt_sys_ttytype.discrib,palFldvalue[1]);
+    strcpy(sgSwt_sys_ttytype.message,palFldvalue[2]);
+     
+    _swTrim(sgSwt_sys_ttytype.discrib);
+    _swTrim(sgSwt_sys_ttytype.message);
+    
+    psgSwt_sys_ttytype = (struct swt_sys_ttytype *)realloc(psgSwt_sys_ttytype,
+      i * sizeof(struct swt_sys_ttytype));
+
+    memcpy((char *)&(psgSwt_sys_ttytype[i-1]),(char *)&sgSwt_sys_ttytype,
+      sizeof(struct swt_sys_ttytype));
+  
+    swVdebug(3,"S0380 | %d,%s,%s,%s",psgSwt_sys_ttytype[i-1].Term_id,
+           psgSwt_sys_ttytype[i-1].discrib,
+           psgSwt_sys_ttytype[i-1].message,
+           psgSwt_sys_ttytype[i-1].lexpress);
+  }
+  *iTerm_num=i; 
+  fclose(fp);
+  swVdebug(2,"S0270: 读终端配置表成功");
+  swVdebug(2,"S0280: [函数返回] swLoadsysttytype()返回码=0");
+  return(SUCCESS);
+}
+
+/**************************************************************
+ ** 函数名      ：swLoadmsgpack1()
+ ** 功  能      ：预读终端配置表
+ ** 作  者      ：
+ ** 建立日期    ：
+ ** 最后修改日期：
+ ** 调用其它函数：
+ ** 全局变量    ：psgSwt_sys_msgpack
+ ** 参数含义    ：iMsgtype:显示报文类型;iCount:显示参数个数
+ ** 返回值      ：SUCCESS,FAIL
+***************************************************************/
+
+int swLoadmsgpack1(short iMsgtype,int *iCount)
+{
+  int i;
+  FILE *fp;
+  char palFldvalue[10][iFLDVALUELEN];
+  short ilRc;
+  char alTmpexp[2*iFLDVALUELEN + 1];   /* add by zjj 2001.11.29 */
+  
+  swVdebug(2,"S0290: [函数调用] swLoadmsgpack1(%d)",iMsgtype);
+
+  swVdebug(2,"S0300: 开始读取类型为%d的报文 ",iMsgtype);
+
+  /* 预读配置文件　*/
+  if ((fp = _swFopen("config/SWMSGPACK.CFG","r")) == NULL)
+  {
+    swVdebug(1,"S0310: [错误/系统调用] fopen()函数,errno=%d[%s],打开swt_sys_msgpack.cfg文件出错",errno,strerror(errno));
+    return(-1);
+  }
+  i = 0;
+
+  while ((ilRc = _swGetitemmode2(fp, palFldvalue,10)) == 0)
+  {
+    if (atoi(palFldvalue[0]) == iMsgtype)
+    {
+      sgSwt_sys_msgpack.msg_type = atoi(palFldvalue[0]);
+      sgSwt_sys_msgpack.fld_id = atol(palFldvalue[1]); //modified by mzg 20150428 atoi->atol
+      strcpy(sgSwt_sys_msgpack.fld_desc,palFldvalue[2]);
+      
+      ilRc = _swExpN2T(palFldvalue[3],alTmpexp);
+      if (ilRc != SUCCESS) return(ilRc);
+      strcpy(sgSwt_sys_msgpack.fld_express,alTmpexp);
+
+      sgSwt_sys_msgpack.fld_len = atoi(palFldvalue[4]);
+      sgSwt_sys_msgpack.fld_display_len = atoi(palFldvalue[5]);
+      strcpy(sgSwt_sys_msgpack.fld_alignment,palFldvalue[6]);
+
+      psgSwt_sys_msgpack = (struct swt_sys_msgpack *)realloc(psgSwt_sys_msgpack,
+        (i+1)*sizeof(struct swt_sys_msgpack));
+
+      memcpy((char *)&psgSwt_sys_msgpack[i],(char *)&sgSwt_sys_msgpack,
+        sizeof(struct swt_sys_msgpack));
+
+      swVdebug(2,"S0320: psgSwt_sys_msgpack[%d]:%d,%d,%s,%s,"\
+         "%d,%d,%s",i,
+          psgSwt_sys_msgpack[i].msg_type,
+          psgSwt_sys_msgpack[i].fld_id,
+      	  psgSwt_sys_msgpack[i].fld_desc,
+      	  psgSwt_sys_msgpack[i].fld_express,
+      	  psgSwt_sys_msgpack[i].fld_len,
+      	  psgSwt_sys_msgpack[i].fld_display_len,
+      	  psgSwt_sys_msgpack[i].fld_alignment);
+       i ++;
+    }
+  }/* end while */
+
+  *iCount = i;
+  swVdebug(2,"S0330: 读取类型为%d的报文成功，该报文的域个数为%d ",iMsgtype,*iCount);
+  swVdebug(2,"S0340: [函数返回] swLoadmsgpack1()返回码=0");
+  return(0);
+}
+
+/***********************************************************/
+void initial()
+{
+  initscr();
+  cbreak();
+  nonl();
+  noecho();
+  intrflush(stdscr,FALSE);
+  keypad(stdscr,TRUE);
+  refresh();
+}
+/************************************************************/
+int swMainwin()
+{
+  char alBuf[1024],alFormat[20],alFldbuf[256];
+  int  i,ilRc;
+  /*add by gxz 2003.02.28*/
+  int  iLeft,iRight;
+  /**/
+  
+  /* 输出静态信息  */
+  memset(alBuf,0x00,sizeof(alBuf));
+  ilRc = swLoadmsgpack1(psgSwt_sys_ttytype[igTermid].Term_id,&igCount);
+  if (ilRc)
+  {
+    swVdebug(1,"S0350: [错误/函数调用]  swLoadmsgpack1()函数, 返回码=%d,子进程:读报文组织表出错 ",ilRc);
+    return(-1);
+  }
+  for (i=0;i<igCount;i++)
+  {
+    iLeft = (psgSwt_sys_msgpack[i].fld_len - strlen(psgSwt_sys_msgpack[i].fld_desc))/2;
+    iRight = psgSwt_sys_msgpack[i].fld_len - iLeft;
+    /*delete by gxz 2003.1.7
+     sprintf(alFormat,"%s%d.%ds ","%-",psgSwt_sys_msgpack[i].fld_len,psgSwt_sys_msgpack[i].fld_len);
+    sprintf(alFldbuf,alFormat,psgSwt_sys_msgpack[i].fld_desc);*/
+    /*add by gxz 2003.1.7*/
+    sprintf(alFormat,"%s%d.%ds%s%d.%ds ","%-",iLeft,iLeft,"%-",iRight,iRight);
+    sprintf(alFldbuf,alFormat," ",psgSwt_sys_msgpack[i].fld_desc);
+    strcat(alBuf,alFldbuf);
+  }  
+  strcpy(agTitle,alBuf);
+  
+  initial();
+  pgHeadwin=newwin(3,80,0,0);  
+  wprintw(pgHeadwin,"信息类型[ %-12.12s]  信息来源[ %-12.12s]", 
+     psgSwt_sys_ttytype[igTermid].message,psgSwt_sys_ttytype[igTermid].discrib);
+  wmove(pgHeadwin,1,0);
+  wprintw(pgHeadwin,"-----------------------------------------");
+  wprintw(pgHeadwin,"---------------------------------------");
+  wmove(pgHeadwin,2 ,0);	
+  wprintw(pgHeadwin,"%-80.80s", agTitle  + igOffset); 
+    
+  wrefresh(pgHeadwin);
+  
+  pgMainwin = newwin(19,80,3,0);
+  wrefresh(pgMainwin);
+
+  pgMsgwin = newwin(2,80,22,0);
+  memset(alBuf,0x00,sizeof(alBuf));
+  strcpy(alBuf,"新晨交换平台流水监控(V4.3.0)     状态: 正在签到...       退出请 按: CTRL+C");
+ 
+  wprintw(pgMsgwin,"-----------------------------------------");
+  wprintw(pgMsgwin,"---------------------------------------");
+  wmove(pgMsgwin,1,0);
+  mvwaddstr(pgMsgwin,1,0,alBuf);
+  wrefresh(pgMsgwin);
+
+  return(0);
+}
+
+int swUdpCreate(int *Port)
+{
+  int sockfd,ilRc;
+/*#ifdef OS_SCO
+  int len;
+#else
+  socklen_t len;
+#endif
+*/
+int len;
+  struct sockaddr_in slAddr;
+
+  if((sockfd = socket(AF_INET,SOCK_DGRAM,0)) == -1)
+  {
+    return -1;
+  }
+
+  slAddr.sin_family = AF_INET;
+  slAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+  slAddr.sin_port = 0;
+
+  if(bind(sockfd,(struct sockaddr *)&slAddr,sizeof(struct sockaddr_in)) == -1)
+  {
+    _swUDPClose(sockfd);
+    return -1;
+  }
+
+  len = sizeof(struct sockaddr_in); 
+  ilRc = getsockname(sockfd,(struct sockaddr*)&slAddr,&len);
+  
+  *Port = ntohs(slAddr.sin_port);
+  swVdebug(2,"S0360: ilRc= %d port=[%d]",ilRc,*Port);
+
+  return sockfd;
+}
+
+/**************************************************************
+ ** 函数名      : swGetField
+ ** 功  能      : 从 aBuffer 中取第n个字段放入aField中。
+                  aBuffer中的每个字段以Seperator为分隔苻。
+                  n 从 1 开始。
+ ** 作  者      : nh 
+ ** 建立日期    : 2001/08/10
+ ** 调用其它函数:
+ ** 全局变量    :
+ ** 参数含义    : aBuffer   : 原串
+                  n         : 序号
+                  aField    : 目的域
+                  Seperator : 分隔符
+ ** 返回值      : SUCCESS
+***************************************************************/
+
+int swGetField(char *aBuffer,int n,char *aField,char Seperator)
+{
+  int  i,ilLen,j;
+  char *alTmp, alBegin[200];
+
+  swVdebug(2,"S0370: [函数调用] swGetField()");
+
+  i=0 ;
+  alTmp=aBuffer;
+
+  if(*alTmp == Seperator)
+  {
+    alTmp++;
+    i++;
+  }
+  
+  while(*alTmp != '\0' &&  i != n-1) 
+  {
+    if(*alTmp == Seperator && *(alTmp-1) != '^') 
+    {
+      alTmp++;
+      i++;
+    }
+    else
+    alTmp++;
+  }
+  
+  if (*alTmp == '\0') 
+  {
+    aField[0] ='\0';
+    return(0);
+  }
+  
+  alBegin[0] = '\0';
+  ilLen=0;
+  
+  for(j=0; *alTmp != '\0' && j<200; j++)
+  {
+    if(*alTmp == Seperator && *(alTmp-1) != '^') 
+      break;
+    if(*alTmp == '^' && (*(alTmp+1) == '^' || *(alTmp+1) ==Seperator)) 
+    {
+      alTmp++;
+      alBegin[j] = *alTmp;
+    }
+    else alBegin[j] = *alTmp;
+    alTmp++;
+    ilLen++;
+  }
+  
+  if (ilLen != 0)
+  {
+    memcpy(aField, alBegin, ilLen);
+    aField[ilLen] = '\0';
+    return(ilLen);
+  }
+  
+  else 
+  {
+    aField[0] = '\0';
+
+    swVdebug(2,"S0380: [函数返回] swGetField()返回码=0");
+    return(0);
+  }
+}
+void swUdpQuit(int sig)
+{
+  int ilRc;
+  struct msgpack slMsgpack;
+  int ilSendlen;
+  
+  signal(sig,SIG_IGN);
+  swVdebug(1,"S0390: 捕捉到信号signo = %d",sig);
+
+  /*组包签退报文*/
+  memset(&slMsgpack,0x00,sizeof(slMsgpack));
+  slMsgpack.sMsghead.iMsgtype = 903;
+
+  strcpy(slMsgpack.aMsgbody,agSendbuf);
+  slMsgpack.sMsghead.iBodylen = 29;
+  ilSendlen = slMsgpack.sMsghead.iBodylen + sizeof(struct msghead);
+
+  ilRc=_swUDPPut(igSock,sgSwt_sys_port.addr,sgSwt_sys_port.port,(char *)&slMsgpack,ilSendlen);
+
+  if(ilRc!=0)
+  {
+    swVdebug(1,"S0400: 发送签退报文到IP[%s] PORT[%d]失败",sgSwt_sys_port.addr,sgSwt_sys_port.port);
+    /* swQuit(igSock); */
+  }
+  swVdebug(2,"S0410: 发送签退报文到IP[%s] PORT[%d]成功",sgSwt_sys_port.addr,sgSwt_sys_port.port);
+  if(cgDebug >= 2)
+  {
+    swDebug("S0550: 发送报文体的内容为:%s长度为:%d",slMsgpack.aMsgbody,ilSendlen);
+    swDebughex((char *)&slMsgpack,ilSendlen);
+  }
+  swQuit(igSock);
+}
+
+/* 以下函数为zjj add */
+int _swUDPGet_tty(int sock,char *aAddr,int *iPort,char *aMsgpack,unsigned int *iMsglen)
+{
+  struct sockaddr_in slSockaddr;
+  int ilLen = *iMsglen;
+  #ifdef OS_SCO
+    int ilFromlen = sizeof(struct sockaddr_in);
+  #else
+    socklen_t ilFromlen = sizeof(struct sockaddr_in);
+  #endif
+
+  *iMsglen = recvfrom(sock,aMsgpack,ilLen,
+         0,(struct sockaddr *)&slSockaddr,&ilFromlen);
+
+  if(*iMsglen == -1)
+    return(-1);
+
+  strcpy(aAddr,(char *)inet_ntoa(slSockaddr.sin_addr));
+
+  *iPort = ntohl(slSockaddr.sin_port);
+  return(0);
+}
+
+/* 数据缓存 */
+int swSetdata(char * aBuffer)
+{
+  int i;
+  for(i = igLinecount;i > 0;i--)
+  {
+     memcpy(agDisplay[i],agDisplay[i - 1],BUFLEN);	
+  }
+  memcpy(agDisplay[0],aBuffer,BUFLEN);
+  return(0);
+}
+
+/* 取要偏移的列数 */
+int swGetmove_num(int ilFld_start,int *iMove_num)
+{
+  int i;
+  int ilNum = 0;
+  for(i = 0;i < ilFld_start;i++)
+  {
+    ilNum += psgSwt_sys_msgpack[i].fld_len + 1;
+  }
+  *iMove_num = ilNum;
+  return(0);
+}
+
+/* 屏幕数据的显示 */
+int swShowdata(char aBuffer[][BUFLEN],int iOffset)
+{
+  int i;
+  swRedrawhead();  
+  for(i = 0;i < igLinecount;i++)
+  {
+     wmove(pgMainwin,i ,0);
+     wprintw(pgMainwin,"%-80.80s", aBuffer[i] + igOffset); 
+  }
+  wrefresh(pgMainwin);
+  return(0);
+}
+
+/* 处理键盘输入 */
+int swProcesskey()
+{
+  int ilKey;
+  int ilFlag = 0;
+  int ilMove_num;
+  
+ ilKey = getch();
+  switch (ilKey)
+  {
+    case KEY_LEFT:
+      swVdebug(2,"KEY_LEFT pressed");
+      if (igFld_start <= 0)
+        igFld_start = 0;
+      else
+        igFld_start--;
+      ilFlag = 1;
+      break;
+    case KEY_RIGHT:
+      swVdebug(2,"KEY_RIGHT pressed");
+      if (strlen(agTitle + igOffset) <=80) break;  
+      if(igFld_start >= igCount - 1)
+        igFld_start = igCount - 1;
+      else
+        igFld_start ++;
+      ilFlag = 1;
+      break;
+    default:
+      ilFlag = 0;
+      break;
+  }
+  swVdebug(2,"开始显示的第一个域[%d]",igFld_start);
+  if (ilFlag == 1)
+  {
+    swGetmove_num(igFld_start,&ilMove_num);
+    if (ilMove_num <=0) 
+      igOffset = 0;
+    else
+      igOffset = ilMove_num;
+    swVdebug(2,"移动的列数[%d]",igOffset);      
+    swShowdata(agDisplay,igOffset); 
+  }
+  return(0);	
+}
+
+int swRedrawhead()
+{
+  /* 输出静态信息  */
+  wmove(pgHeadwin,2 ,0);
+
+  wprintw(pgHeadwin,"%-80.80s", agTitle  + igOffset); 
+  swVdebug(2,"agTitle = %s",agTitle);
+  swVdebug(2,"%-80.80s", agTitle  + igOffset); 
+  wrefresh(pgHeadwin);  
+
+  return(SUCCESS);
+}
+

@@ -1,0 +1,4 @@
+ROUTEDESC=柜台-加办,撤办交易转发
+[ROUTE]
+#发往 加办,撤办交易 邮箱[266]
+100 SEND 266 WITH END

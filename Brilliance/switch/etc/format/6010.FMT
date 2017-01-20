@@ -1,0 +1,6 @@
+FMTDESC=电子渠道请求客户信息-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+21 SET CUSID1 = IF(SEQ(LEN(GETVALUE(/root/pri/KHH)),0),0,GETVALUE(/root/pri/KHH))

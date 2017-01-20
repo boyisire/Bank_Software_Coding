@@ -1,0 +1,6 @@
+
+[fmt_g]
+FMTDESC=网银外币-密钥重置-打包
+TRANTYPE=104
+MAC_CREATE=
+MAC_CHECK=

@@ -1,0 +1,5 @@
+ROUTEDESC=网银第三方支付(新支付平台)文件通知转发前端路由;
+[ROUTE]
+10 SET direction=1
+20 CALL 76 WITH REVMODE 1
+30 SEND MSGHEAD(iBegin_q_id) WITH END

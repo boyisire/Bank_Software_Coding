@@ -1,0 +1,11 @@
+ROUTEDESC=批量商务汇款                          
+[ROUTE]                                         
+10 IF GT(LEN(FML(PTERRFLAG)),0) THEN GOTO 100   
+30 CALL 118 WITH REVMODE 1                      
+40 SEND 24 WITH END                             
+50 CALL 118 WITH REVMODE 1                      
+60 SEND 24 WITH END                             
+                                                
+100 SET retcode = 20009997                      
+110 SEND 24 WITH END, GROUP 23999               
+

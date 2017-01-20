@@ -1,0 +1,19 @@
+FMTDESC=索引库变更附加账号-公共请求
+TRANTYPE=4
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+10 DO XMLINIT(root,GBK)
+
+20 SET trancode = GETVALUE(/root/pub/trancode)
+30 SET trandate = GETVALUE(/root/pub/trandate)
+40 SET trantime = GETVALUE(/root/pub/trantime)
+50 SET CUSID    = GETVALUE(/root/pri/CUSID)
+60 SET TRANID   = GETVALUE(/root/pri/TRANID)
+70 SET FJZHFLAG   = GETVALUE(/root/pri/FJZHFLAG)
+80 SET TRANCODE   = GETVALUE(/root/pri/TRANCODE)
+90 SET YTRANDATE  = GETVALUE(/root/pri/YTRANDATE)
+95 VAR FJZH = MID(GETVALUE(/root/pri/FJZHFLAG),2,SUB(LEN(GETVALUE(/root/pri/FJZHFLAG)),1))
+100 SET VALUE = MOD(HASH(VAR(FJZH)),1024)
+
+1000 DO XMLFREE()

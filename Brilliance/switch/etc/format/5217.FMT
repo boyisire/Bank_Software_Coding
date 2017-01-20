@@ -1,0 +1,27 @@
+FMTDESC=电子银行-客户号及密码状态信息查询-应答
+TRANTYPE=104
+MAC_CREATE=
+MAC_CHECK=
+[TDF]
+#TRANCODE=[100400]
+10 DO XMLINIT(root,GBK)
+20 TDF 5001
+
+# 电子银行-客户号查询 应答
+200 FIELD 20 = ADDNODE( /root/pri,KHH ,FML(KHH)) # 客户号
+210 FIELD 21 = ADDNODE( /root/pri,ZJLX ,FML(ZJLX)) # 证件类型
+220 FIELD 22 = ADDNODE( /root/pri,ZJHM,FML(ZJHM)) # 证件号码
+230 FIELD 23 = ADDNODE( /root/pri,KHXM,FML(KHXM)) # 客户姓名
+
+240 FIELD 24 = ADDNODE( /root/pri,DLMMCZZT  ,FML(DLMMCZZT  )) # 登录密码重置状态    
+250 FIELD 25 = ADDNODE( /root/pri,JYMMCZZT  ,FML(JYMMCZZT  )) # 交易密码重置状态    
+260 FIELD 26 = ADDNODE( /root/pri,DLMMCZSJ  ,FML(DLMMCZSJ  )) # 登录密码重置时间    
+270 FIELD 27 = ADDNODE( /root/pri,JYMMCZSJ  ,FML(JYMMCZSJ  )) # 交易密码重置时间    
+280 FIELD 28 = ADDNODE( /root/pri,DLMMDRCWCS,FML(DLMMDRCWCS)) # 登录密码当日错误次数
+290 FIELD 29 = ADDNODE( /root/pri,DLMMLJCWCS,FML(DLMMLJCWCS)) # 登录密码累计错误次数
+300 FIELD 30 = ADDNODE( /root/pri,JYMMDRCWCS,FML(JYMMDRCWCS)) # 交易密码当日错误次数
+310 FIELD 31 = ADDNODE( /root/pri,JYMMLJCWCS,FML(JYMMLJCWCS)) # 交易密码累计错误次数
+                                           
+
+990 DO XMLDUMP()
+1000 DO XMLFREE()

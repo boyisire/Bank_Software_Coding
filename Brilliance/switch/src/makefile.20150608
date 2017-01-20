@@ -1,0 +1,730 @@
+include $(HOME)/switch/Makefile.linux
+
+all: 	swPreproc libusrfun.so libmqapi.a libswapi.a libgfsxml.a swInit swFormat swShutdown \
+	swCtrl swTidTimCache swFormatcl swRouter swShmview swShmcheckTool swSyscon swTuxedo swLoadfile \
+	swMonlog swMonsaf swMonrev libdebug.a
+
+other: swPreproc libusrfun.so libmqapi.a libswapi.a
+
+.dbc.o:
+#	./getsrc switch $*.dbc
+	swPreproc "<DB_DB2><DB_POSTGRESQL><DB_INFORMIX><DB_SYBASE><DB_ALTIBASE><DB_DB2_64>" $*.dbc $*.pc
+	$(ESQL) $(PROCPLSFLAGS) $(ORA_INCLUDE) iname=$*.pc
+	$(CC) $(CFLAGS) -DDB_ORACLE -DOS_LINUX -DDATABASE -o $*.o $(INCLUDE) $*.c
+#	./rmsrc $*.dbc
+#	mv $*.bnd $(BND)
+	rm $*.c 
+	rm $*.pc
+	rm $*.lis
+
+
+.c.o:
+#	./getsrc switch $*.c
+	$(CC) $(CFLAGS) -I../inc -DDB_ORACLE -DOS_LINUX -DDATABASE -o $*.o $(INCLUDE) $*.c 
+#	./rmsrc $*.c
+
+libsendmacapi.a: PlMacSend.o
+	@echo Building "libsendmacapi.a"
+	$(AR) rv $(LIB)/libsendmacapi.a \
+	PlMacSend.o	
+
+libmqapi.a: swMqapi.o
+	@echo Building "libmqapi.a..."
+	$(AR) rv $(LIB)/libmqapi.a \
+		swMqapi.o
+
+libusrfun.so: swUsrfun.o swUsrextfun.o PlSec.o swFun.o swShmapi.o  sw_shmapi_tranlog.o\
+	swCodetranfun.o  swxml.o sw_lock.o swShmapi_rev.o swLog.o swUtil.o\
+	swFailline.o HashIndex.o
+	@echo Building "libusrfun.a..."
+	$(AR) rv $(LIB)/libusrfun.a \
+                swUsrfun.o \
+                swUsrextfun.o \
+		swFun.o \
+		swShmapi.o \
+		swCodetranfun.o \
+		sw_shmapi_tranlog.o \
+		swxml.o \
+		sw_lock.o \
+        swShmapi_rev.o PlSec.o swLog.o swUtil.o swFailline.o HashIndex.o
+	
+libswapi.a: swapi.o swGroupapi.o swFmtapi.o \
+	swFmtfun.o swFm8583.o swFm8583E.o
+	@echo Building "libswapi.a..."
+	$(AR) rv $(LIB)/libswapi.a \
+		swapi.o \
+		swFmtapi.o \
+		swFmtfun.o \
+		swFm8583.o \
+		swGroupapi.o \
+		swFm8583E.o \
+        swShmapi_rev.o
+
+libgfsxml.a:swxml.o
+	@echo Building "libgfsxml.a..."
+		$(AR) rv $(LIB)/libgfsxml.a swxml.o
+		
+libdebug.a: swLog.o swUtil.o
+	@echo Building "libdebug.a..."
+	$(AR) rv $(LIB)/libdebug.a \
+		swLog.o swUtil.o
+
+
+swInit:   swInit.o swShmfun.o
+	@echo Building "swInit..."
+	$(CC) $(BITFLAG) -o $(EXE)/swInit \
+		swInit.o \
+		swShmfun.o \
+		-L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS) $(SHMAPPLIBS) $(APIHASHLIBS) 
+
+swShmcheckTool:   swShmcheckTool.o swShmfun.o
+	@echo Building "swShmcheckTool..."
+	$(CC) $(BITFLAG) -o $(EXE)/swShmcheckTool \
+		swShmcheckTool.o \
+		swShmfun.o  \
+		-L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS) $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swShutdown: swShutdown.o swShmfun.o
+	@echo Building "swShutdown..."
+	$(CC) $(BITFLAG) -o $(EXE)/swShutdown \
+		swShutdown.o \
+		swShmfun.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS)  \
+		$(BMQLIB) $(SYSLIBS)  $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swFormat: swFormat.o swFmtapi.o \
+	swFmtfun.o swFm8583.o swFm8583E.o
+	@echo Building "swFormat..."
+	$(CC) $(BITFLAG) -o $(EXE)/swFormat \
+		swFormat.o \
+		swFmtapi.o \
+		swFmtfun.o \
+		swFm8583.o \
+		swFm8583E.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)  $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swFormatcl: swFormat.o swFmtapi.o \
+	swFmtfun.o swFm8583.o swFm8583E.o
+	@echo Building "swFormatcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swFormatcl \
+		swFormat.o \
+		swFmtapi.o \
+		swFmtfun.o \
+		swFm8583.o \
+		swFm8583E.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS) $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swCtrl: swCtrl.o swFmtapi.o \
+	swFmtfun.o swFm8583.o swFm8583E.o 
+	@echo Building "swCtrl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swCtrl \
+		swCtrl.o \
+		swFmtapi.o \
+		swFmtfun.o \
+		swFm8583.o \
+		swFm8583E.o \
+		 -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)  $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swCtrlcl: swCtrl.o swFmtapi.o \
+	swFmtfun.o swFm8583.o swFm8583E.o
+	@echo Building "swCtrlcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swCtrlcl \
+		swCtrl.o \
+		swFmtapi.o \
+		swFmtfun.o \
+		swFm8583.o \
+		swFm8583E.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swRouter: swRouter.o
+	@echo Building "swRouter..."
+	$(CC) $(BITFLAG) -o $(EXE)/swRouter \
+		swRouter.o \
+                $(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS) $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swRoutercl: swRouter.o
+	@echo Building "swRoutercl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swRoutercl \
+		swRouter.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swMonlog: swMonlog.o
+	@echo Building "swMonlog..."
+	$(CC) $(BITFLAG) -o $(EXE)/swMonlog\
+		swMonlog.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swMonsaf: swMonsaf.o
+	@echo Building "swMonsaf..."
+	$(CC) $(BITFLAG) -o $(EXE)/swMonsaf\
+		swMonsaf.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swMonrev: swMonrev.o
+	@echo Building "swMonrev..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swMonrev\
+		swMonrev.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swMonlogcl: swMonlog.o
+	@echo Building "swMonlogcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swMonlogcl\
+		swMonlog.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swMonsafcl: swMonsaf.o
+	@echo Building "swMonsafcl..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swMonsafcl\
+		swMonsaf.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swMonrevcl: swMonrev.o
+	@echo Building "swMonrevcl..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swMonrevcl\
+		swMonrev.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swBatch: swBatch.o
+	@echo Building "swBatch..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swBatch\
+		swBatch.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swDb_Db2: swDb_Db2.o
+	@echo Building "swDb_Db2..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swDb_Db2\
+		swDb_Db2.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+		
+swDb_Db2cl: swDb_Db2.o
+	@echo Building "swDb_Db2cl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swDb_Db2cl\
+		swDb_Db2.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swFile: swFile.o swftp.o
+	@echo Building "swFile..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swFile \
+		swFile.o \
+		swftp.o \
+		$(SYSLIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) -L$(DBLIBS) $(BMQLIB) $(SYSLIBS)
+		
+swFilecl: swFile.o swftp.o
+	@echo Building "swFilecl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swFilecl \
+		swFile.o \
+		swftp.o \
+		$(SYSLIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) -L$(DBLIBS) $(BMQLIB)
+
+swSyscom1:swSyscom1.o\
+	swSyscomfun1.o
+	@echo Building "swSyscom1..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSyscom1\
+		swSyscom1.o\
+		swSyscomfun1.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swSyscom: swSyscom.o\
+	swSyscomfun.o
+	@echo Building "swSyscom..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swSyscom\
+		swSyscom.o \
+		swSyscomfun.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+		
+swSyscomcl: swSyscom.o\
+	swSyscomfun.o
+	@echo Building "swSyscomcl..."	
+	$(CC) $(BITFLAG) -o $(EXE)/swSyscomcl\
+		swSyscom.o \
+		swSyscomfun.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+
+swSyscon: swSyscon.o\
+	swSysconfun.o
+	@echo Building "swSyscon..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSyscon\
+		swSyscon.o\
+		swSysconfun.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swSysconcl: swSyscon.o\
+	swSysconfun.o
+	@echo Building "swSysconcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSysconcl\
+		swSyscon.o\
+		swSysconfun.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)
+		
+
+
+swSysmon: swSysmon.o
+	@echo Building "swSysconcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSysmon\
+		swSysmon.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) -lcurses $(SYSLIBS)
+
+swSysmoncl: swSysmon.o
+	@echo Building "swSysconcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSysmoncl\
+		swSysmon.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) -lcurses
+
+swSystty: swSystty.o
+	@echo Building "swSystty..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSystty \
+		swSystty.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) -lcurses $(SYSLIBS)
+
+swTask: swTask.o
+	@echo Building "swTask..."
+	$(CC) $(BITFLAG) -o $(EXE)/swTask\
+		swTask.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIBS) $(BMQLIB) $(SYSLIBS)
+
+swPrep: swPrep.o
+	@echo Building "swPrep..."
+	$(CC) $(BITFLAG) -o $(EXE)/swPrep\
+		swPrep.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swPrep_TUX: swPrep.ec
+	@echo Building "swPrep_TUX..."
+	$(CC) -D TUXEDO_APP $(INFFLAGS) $(INCLUDE) \
+		-I$(INFORMIXDIR)/incl -I$(TUXDIR)/include\
+		swPrep.ec
+	$(CC) -D TUXEDO_APP $(CFLAGS) $(INCLUDE) \
+		-I$(INFORMIXDIR)/incl -I$(TUXDIR)/include\
+		swPrep.c
+	buildclient -o $(EXE)/swPrep_TUX\
+		-f swPrep.o \
+		-f "$(SYSLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) -L$(DBLIBS) $(BMQLIB) \
+		$(ESQLCLIBS)" 
+
+swEchotest: swEchotest.o
+	@echo Building "swEchotest..."
+	$(CC) $(BITFLAG) -o $(EXE)/swEchotest\
+		swEchotest.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swEchotestcl: swEchotest.o
+	@echo Building "swEchotestcl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swEchotestcl\
+		swEchotest.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB)
+
+swGetpack: swGetpack.o
+	@echo Building "swGetpack..."
+	$(CC) $(BITFLAG) -o $(EXE)/swGetpack\
+		swGetpack.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+#swTestmult: swTestmult.o
+#	@echo Building "swTestmult..."
+#	$(CC) -o $(EXE)/swTestmult\
+#		swTestmult.o \
+#		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+#		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swTestsign: swTestsign.o
+	@echo Building "swTestsign..."
+	$(CC) $(BITFLAG) -o $(EXE)/swTestsign\
+		swTestsign.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swTestfmt: swTestfmt.o
+	@echo Building "swTestfmt..."
+	$(CC) $(BITFLAG) -o $(EXE)/swTestfmt\
+		swTestfmt.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swChgvdebug: swChgvdebug.o
+	@echo Building "swChgvdebug..."
+	$(CC) $(BITFLAG) -o $(EXE)/swChgvdebug\
+		swChgvdebug.o
+
+#swFunctest: swFunctest.o sw_shmapi_tranlog.o
+#	@echo Building "swFunctest..."
+#	$(CC) $(BITFLAG) -o $(EXE)/swFunctest\
+#		swFunctest.o \
+#		sw_shmapi_tranlog.o \
+#		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+#		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS) $(APPLIBS)
+
+swFunctest: swFunctest.o
+	@echo Building "swFunctest..."
+	$(CC) $(BITFLAG) -o $(EXE)/swFunctest\
+		swFunctest.o \
+                -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+                $(BMQLIB) $(SYSLIBS) $(SHMAPPLIBS) $(APIHASHLIBS) 
+
+
+
+swLoadfile:   swLoadfile.o
+	@echo Building "swLoadfile..."
+	$(CC) $(BITFLAG) -o $(EXE)/swLoadfile \
+		swLoadfile.o \
+		-L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+
+swSyncdata: swSyncdata.o
+	@echo Building "swSyncdata..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSyncdata \
+	swSyncdata.o \
+	-L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+	$(BMQLIB) $(SYSLIBS) 
+
+swAudit:   swAudit.o
+	@echo Building "swAudit..."
+	$(CC) $(BITFLAG) -o $(EXE)/swAudit \
+		swAudit.o \
+		-L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swShmview: swShmview.o\
+	swShmtest.o
+	@echo Building "swShmview..."
+	$(CC) $(BITFLAG) -o $(EXE)/swShmview\
+		swShmview.o\
+		swShmtest.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)  $(SHMAPPLIBS) $(APIHASHLIBS)
+
+swTest: swTest.o
+	$(CC) $(BITFLAG) -o $(EXE)/swTest\
+		swTest.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swHost: swHost.o
+	$(CC) $(BITFLAG) -o $(EXE)/swHost\
+		swHost.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swTestpack: swTestpack.o
+	$(CC) $(BITFLAG) -o $(EXE)/swTestpack\
+		swTestpack.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swTestpack2: swTestpack2.o
+	$(CC) $(BITFLAG) -o $(EXE)/swTestpack2\
+		swTestpack2.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swTestn: swTestn.o
+	$(CC) $(BITFLAG) -o $(EXE)/swTestn\
+		swTestn.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swTestterm: swTestterm.o
+	$(CC) $(BITFLAG) -o $(EXE)/swTestterm\
+		swTestterm.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+swTidTimCache:swTidTimCache.o swShmfun.o
+	$(CC) $(BITFLAG) -o $(EXE)/swTidTimCache\
+		swTidTimCache.o\
+		swShmfun.o  \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS) $(SHMAPPLIBS) $(APIHASHLIBS) 
+swMakefml: swMakefml.o
+	$(CC) $(BITFLAG) -o $(EXE)/swMakefml\
+		swMakefml.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+swMkfmlhead: swMkfmlhead.o
+	$(CC) $(BITFLAG) -o $(EXE)/swMkfmlhead\
+		swMkfmlhead.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) $(SYSLIBS)
+
+swComm: swComm.o  sw_shmapi_tranlog.o
+	@echo Building "swComm..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComm\
+		swComm.o \
+		sw_shmapi_tranlog.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpsss: swComtcpsss.o swCompub.o \
+	swComtcppub.o 
+	@echo Building "swComtcpsss..." 
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpsss\
+		swComtcpsss.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpssc: swComtcpssc.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpssc..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpssc\
+		swComtcpssc.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpsls: swComtcpsls.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpsls..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpsls\
+		swComtcpsls.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpslc: swComtcpslc.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpslc..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpslc\
+		swComtcpslc.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpass: swComtcpass.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpass..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpass\
+		swComtcpass.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpasc: swComtcpasc.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpasc..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpasc\
+		swComtcpasc.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpals: swComtcpals.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpals..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpals\
+		swComtcpals.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swComtcpalc: swComtcpalc.o swCompub.o\
+	swComtcppub.o
+	@echo Building "swComtcpalc..."
+	$(CC) $(BITFLAG) -o $(EXE)/swComtcpalc\
+		swComtcpalc.o \
+		swCompub.o \
+		swComtcppub.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swFront: swFront.o
+	@echo Building "swFront..."
+	$(CC) $(BITFLAG) -o $(EXE)/swFront swFront.o\
+		  -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+
+swPreproc: swPreproc.o
+	@echo Building "swPreproc..."
+	$(CC) $(BITFLAG) -o $(EXE)/swPreproc swPreproc.o
+
+swGetlicense: swGetlicense.o swLicense.o  
+	@echo Building "swGetlicense..."
+	$(CC) $(BITFLAG) -o $(EXE)/swGetlicense \
+		swGetlicense.o \
+		swLicense.o \
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB)	
+
+	
+
+swCheckcfg: swCheckcfg.o swSyscomfun.o swShmfun.o
+	@echo Building "swCheckcfg..."
+	$(CC) $(BITFLAG) -o $(EXE)/swCheckcfg swCheckcfg.o swSyscomfun.o swShmfun.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APILIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+		
+swShmGroup: swShmGroup.o
+	@echo Building "swShmGroup..."
+	$(CC) $(BITFLAG) -o $(EXE)/swShmGroup swShmGroup.o swShmapi.o sw_shmapi_tranlog.o\
+		$(SYSLIBS) -L$(DBLIBS) \
+		$(APPLIBS) $(PLLIBS) $(APILIBS) $(BMQLIB) $(SYSLIBS)
+		
+swSyswin: swSyswin.o\
+	swSyswinfun.o\
+	swCurses.o
+	@echo Building "swSyswin..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSyswin\
+		swSyswin.o\
+		swSyswinfun.o\
+		swCurses.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) -lcurses $(SYSLIBS)
+
+swSyswincl: swSyswin.o\
+	swSyswinfun.o\
+	swCurses.o
+	@echo Building "swSyswincl..."
+	$(CC) $(BITFLAG) -o $(EXE)/swSyswincl\
+		swSyswin.o\
+		swSyswinfun.o\
+		swCurses.o\
+		$(SYSLIBS) -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+		$(BMQLIB) -lcurses $(SYSLIBS)
+				
+yacc2c:
+	yacc -d -b Route -o Route.tab.c yacc/route.y
+	lex  -olex.route.c yacc/route.l
+	yacc -d -b Format -o Format.tab.c yacc/format.y
+	lex -olex.format.c yacc/format.l
+	yacc -d -b XMF -o XMF.tab.c yacc/formatXMF.y
+	lex -olex.xmf.c yacc/formatXMF.l
+
+swRouteYacc: Route.tab.o lex.route.o
+	$(CC) $(BITFLAG) -o $(EXE)/swRouteYacc Route.tab.o lex.route.o
+
+swFormatYacc: Format.tab.o lex.format.o
+	$(CC) $(BITFLAG) -o $(EXE)/swFormatYacc Format.tab.o lex.format.o
+
+swXMFYacc: XMF.tab.o lex.xmf.o
+	$(CC) $(BITFLAG) -o $(EXE)/swXMFYacc XMF.tab.o lex.xmf.o
+
+test_putlog:   test_putlog.o 
+	@echo Building "test_putlog..."
+	$(CC) $(BITFLAG) -o $(EXE)/test_putlog \
+                test_putlog.o \
+                -L$(DBLIBS) $(APPLIBS) $(PLLIBS) $(APILIBS) \
+                $(BMQLIB) $(SYSLIBS)
+
+swTuxedo:
+	@echo make -f makefile.tuxedo.linux.pb  all
+	@make -f makefile.tuxedo.linux.pb  all
+
+clean:
+	rm -f tp*
+	#mv *.o $(OBJ); rm `ls *.dbc | sed 's/dbc/pc/g'`; rm `ls *.dbc | sed 's/dbc/c/g'`
+	rm -f *.lis
+	rm -f *.o
+	rm -f swFunctest.c
+	rm -f swFunctest.pc
+
+#clean:
+	#mv *.o $(OBJ); mv `ls *.dbc | sed 's/dbc/pc/g'` $(TMP); mv `ls *.dbc | sed 's/dbc/c/g'` $(TMP)
+
+ftp:
+	> swapi.dbc
+	> swBatch.dbc
+	> swChgvdebug.c
+	> swCodetranfun.c
+	> swComm.c
+	> swCompub.c
+	> swComtcpalc.c
+	> swComtcpals.c
+	> swComtcpasc.c
+	> swComtcpass.c
+	> swComtcppub.c
+	> swComtcpslc.c
+	> swComtcpsls.c
+	> swComtcpssc.c
+	> swComtcpsss.c
+	> swCtrl.dbc
+	> swCurses.c
+	> swDb_Db2.dbc
+	> swDb_Inf.dbc
+	> swDb_Ora.dbc
+	> swEchotest.c
+	> swFile.c
+	> swFm8583.c
+	> swFm8583E.c
+	> swFmtapi.c
+	> swFmtfun.c
+	> swFormat.c
+	> swFront.c
+	> swftp.c
+	> swFunctest.c
+	> swFun.dbc
+	> swGetlicense.c
+	> swGetpack.c
+	> swInit.dbc
+	> swLicense.c
+	> swMakefml.c
+	> swMkfmlhead.c
+	> swMonlog.dbc
+	> swMonrev.dbc
+	> swMonsaf.dbc
+	> swMqapi.c
+	> swPrep.dbc
+	> swPreproc.c
+	> swRouter.c
+	> swShmapi.dbc
+	> swShmfun.c
+	> swShmtest.c
+	> swShmview.c
+	> swShutdown.c
+	> swSyscom.c
+	> swSyscomfun.c
+	> swSyscon.c
+	> swSysconfun.dbc
+	> swSysmon.dbc
+	> swSystty.dbc
+	> swSyswin.c
+	> swSyswinfun.dbc
+	> swTask.c
+	> swTest.c
+	> swTestmult.c
+	> swTestsign.c
+	> swTestterm.c
+	> swUsrfun.c
+	> hxz_test.c
+	> swLoadfile.dbc
+	> swAudit.dbc
+	make
+

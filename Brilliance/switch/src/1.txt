@@ -1,0 +1,106 @@
+/*************************************************************************
+*
+*LibF_Name:	swDbopen
+*
+*  Purpose:   
+*		[语法]	int swDbopen()
+*
+*		[说明]	本函数用于打开数据库switch                   
+*
+*		[返回值] 成功返回 0, 失败返回 sqlca.sqlcode.
+*
+* Version:    1.00A
+*
+* History:    1999/11/22 - Created.
+*
+*Compiler:   Sco Unix V5.04 cc
+*
+*  Author:   lv li xiao   ( Brilliance Group NanJing )                    
+*
+**************************************************************************/
+int swDbopen()
+{
+  char alDbname[20],alDbuser[20],alDbpass[20];
+#ifdef DB_INFORMIX
+  EXEC SQL BEGIN DECLARE SECTION;
+  char database[20];
+  EXEC SQL END DECLARE SECTION;
+#endif
+#ifdef DB_ORACLE
+  EXEC SQL BEGIN DECLARE SECTION;
+  VARCHAR username[20];
+  VARCHAR password[20];
+  VARCHAR tnsname[20];
+  EXEC SQL END DECLARE SECTION;
+#endif
+#ifdef DB_DB2
+  EXEC SQL BEGIN DECLARE SECTION;
+  char database[20];
+  char username[20];
+  char password[20];
+  EXEC SQL END DECLARE SECTION;
+#endif
+#ifdef DB_SYBASE
+  EXEC SQL BEGIN DECLARE SECTION;
+  char database[20];
+  char username[20];
+  char password[20];
+  EXEC SQL END DECLARE SECTION;
+#endif
+#ifdef DB_POSTGRESQL
+  EXEC SQL BEGIN DECLARE SECTION;
+  char database[20];
+  char username[20];
+  char password[20];
+  EXEC SQL END DECLARE SECTION;
+#endif
+  
+  if(getenv("SWITCH_DBNAME")==NULL)
+    strcpy(alDbname,"switch");
+  else
+    strcpy(alDbname,getenv("SWITCH_DBNAME"));
+  
+  if(getenv("SWITCH_DBUSER")==NULL)
+    strcpy(alDbuser,"switch");
+  else
+    strcpy(alDbuser,getenv("SWITCH_DBUSER"));
+       
+  if(getenv("SWITCH_DBPASS")==NULL)
+    strcpy(alDbpass,"switch");
+  else
+    strcpy(alDbpass,getenv("SWITCH_DBPASS"));
+
+
+  strcpy(database,alDbname);
+  strcpy(username,alDbuser);
+  EXEC SQL CONNECT TO :database USER :username;
+
+  return(sqlca.sqlcode);
+}
+
+/*************************************************************************
+*
+*LibF_Name:	swDbclose
+*
+*  Purpose:   
+*		[语法]	int swDbclose()
+*
+*		[说明]	本函数用于关闭数据库switch                   
+*
+*		[返回值] 成功返回 0, 失败返回 sqlca.sqlcode.
+*
+* Version:    1.00A
+*
+* History:    1999/11/22 - Created.
+*
+*Compiler:   Sco Unix V5.04 cc
+*
+*  Author:   lv li xiao   ( Brilliance Group NanJing )                    
+*
+**************************************************************************/
+int  swDbclose()
+{
+  EXEC SQL DISCONNECT;
+  return(sqlca.sqlcode);
+}
+

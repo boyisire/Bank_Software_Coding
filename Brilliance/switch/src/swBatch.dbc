@@ -1,0 +1,488 @@
+/****************************************************************/
+/* 模块编号    ：BATCH                                          */ 
+/* 模块名称    ：批处理模块                                     */
+/* 版 本 号    ：V4.3.0                                         */
+/* 作	 者    ：                                               */
+/* 建立日期    ：1999/11/18                                     */
+/* 最后修改日期：2001/4/3                                       */
+/* 模块用途    ：对交换平台事务批处理                           */
+/* 本模块中包含如下函数及功能说明：                             */
+/*			 （1）int  main();                      */
+/*			 （2）char *GetTimestr()                */
+/*			 （3）time_t AscLongTime()              */
+/*			 （4）int swPresql()                    */
+/****************************************************************/
+
+/* switch定义 */
+#include "switch.h"
+
+EXEC SQL INCLUDE sqlca;
+#ifdef DB_POSTGRESQL
+EXEC SQL INCLUDE swDbstruct.h;
+#endif
+#ifdef DB_DB2
+EXEC SQL INCLUDE '../inc/swDbstruct.h';
+#endif
+#ifdef DB_INFORMIX
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+#ifdef DB_ORACLE
+EXEC SQL INCLUDE "swDbstruct.h";
+#endif
+
+
+/* add by qzg*/
+#include "swShmGroup.h"
+
+
+/* 变量定义 */
+
+/* 函数原型定义 */
+char *GetTimeStr(long);
+time_t AscLongTime(char *);
+void swQuit(int);
+extern int swShmcheck();
+extern int swShmfilefind_tran_log(char *);
+extern int swShmfilefind_proc_log(char *);
+
+/**************************************************************
+ ** 函数名      ：main
+ ** 功  能      ：主函数 
+ ** 作  者      ： 
+ ** 建立日期    ：1999/11/18
+ ** 最后修改日期：2000/4/7
+ ** 调用其它函数：
+ ** 全局变量    ：
+ ** 参数含义    ：
+ ** 返回值      ：
+***************************************************************/
+int main(int argc, char **argv)
+{
+  char alShcmd[101],alFilename[101];
+  char alTranEnd[15],alDate[9],alTime[7];
+  int  i,c,ilRc,ilSavehowlong;
+  long llPredelnum,llDeletenum[6];
+  FILE *fp;
+  struct stat slFilestat;
+  struct timeb fb,fb1;
+  long llTime;
+
+	PB_GROUPINFO sGrpComInfo;
+	int groupid;
+	
+  EXEC SQL BEGIN DECLARE SECTION;
+    long llTran_current;
+    long llTran_id1;
+    long llTran_id2;
+    long llTran_id_max;
+    long llTran_id_min;
+    short ilTmp;
+    char fname[11];
+    long llGrp_Tran_id_max;
+    long llGrp_Tran_id_min;    
+  EXEC SQL END DECLARE SECTION;
+  
+  alDate[0] = '\0';
+  strcpy(alTime,"000000");
+  llPredelnum = 10000;
+  ilSavehowlong = 2;
+
+  c=0;
+  while((c=getopt(argc,argv,"hd:t:n:s:"))!=-1)
+  {
+    swDebug("%c",c);
+    switch( c )
+    {
+      case 'h':  /* 打印帮助信息 */
+        printf("Usage: swBatch [-d <日期> -t <时间> -n <每次处理条数> -s <保留时间>]\n");
+        _swVersion("swBatch Version 4.3.0","-V");
+        break;
+      case 'd':  /* 批处理日期 */
+        strcpy(alDate,optarg);
+        break;
+      case 't':  /* 批处理时间 */
+        strcpy(alTime,optarg);
+        break;
+      case 'n':  /* 每次删除多少条记录 */
+        llPredelnum = atol(optarg);
+        break;
+      case 's':  /* 保留多长时间之内的记录(以小时为单位) */
+        ilSavehowlong = atoi(optarg);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /* 设置调试程序名称 */
+  strcpy(agDebugfile, "swBatch.debug");
+
+  /* 取得DEBUG标志 */
+  if ((cgDebug = _swDebugflag("swBatch"))==FAIL)
+  {
+    printf("取得DEBUG标志出错!\n");
+    exit(-1);
+  }
+
+  ftime(&fb);
+
+  if(alDate[0] == '\0')
+  {
+    time(&llTran_current);
+    ilRc = _swTimeLongToChs(llTran_current,alTranEnd,"YYYYMMDDHHMMSS");
+    if(ilRc)
+    {
+      swVdebug(0,"S0010: _swTimeLongToChs() error");
+      swQuit(-1);
+    }
+    llTran_current -= ilSavehowlong * 3600;
+    swVdebug(2,"S0020: 系统时间=[%s]",alTranEnd);
+    swVdebug(2,"S0030: 保留[%d]小时之内的记录",ilSavehowlong);
+  }
+  else
+  {
+    sprintf(alTranEnd,"%s%s",alDate,alTime);
+    llTran_current=AscLongTime(alTranEnd);
+    if(llTran_current == FAIL)
+    {
+      swVdebug(0,"S0040: 输入参数不合法,[%s]",alTranEnd);
+      fprintf(stderr, "输入参数不合法!\nUsage: swBatch yyyymmdd hhmmss\n\n");
+      exit(-1);
+    } 
+    swVdebug(2,"S0050: 解析日期时间成功,[%s]",alTranEnd);
+  }  
+  swVdebug(2,"S0060: llTran_current=[%ld]",llTran_current);
+
+  
+  /* 打开数据库 */
+  if(swDbopen() != SUCCESS)
+  {
+    swVdebug(0,"S0070: [错误/数据库] 打开数据库出错,sqlcode=%d",sqlca.sqlcode);
+    swQuit(-1);
+  }
+  swVdebug(2,"S0080: 打开数据库");
+
+  swVdebug(2,"S0090: 删除过期的数据库表记录...");
+
+  for(i=0;i<6;i++) llDeletenum[i] = 0;
+
+
+
+/*2009-9-16 add by pc 增加取本组配置信息字段*/
+  memset((char*)&sGrpComInfo,0x00,sizeof(PB_GROUPINFO));
+  groupid=0;
+  groupid=swGetHostGrpId();
+  if (groupid<0) {
+  	swVdebug(0,"S0111 swGetHostGrpId Error [%d][%s]",errno,strerror(errno));
+
+	}	
+  ilRc=swGetGroupHostInfo(groupid,&sGrpComInfo);
+	if (ilRc) {
+  	llGrp_Tran_id_min=0;
+  	llGrp_Tran_id_max=lMAXSERNO;
+	}	
+	else {
+  	llGrp_Tran_id_min=sGrpComInfo.iBegSeqNo;
+  	llGrp_Tran_id_max=sGrpComInfo.iEndSeqNo;	
+	}
+	
+swVdebug(3,"minserialno[%d] maxserialno[%d]",llGrp_Tran_id_min,llGrp_Tran_id_max);
+/*2009-9-16 add by pc 增加取本组配置信息字段*/
+
+  ilTmp = 0;
+  EXEC SQL SELECT MAX(tran_id) into :llTran_id_max:ilTmp FROM swt_his_tran_log 
+    WHERE tran_end <= :llTran_current
+    	AND tran_id>=:llGrp_Tran_id_min
+    	AND tran_id<=:llGrp_Tran_id_max;
+  if(sqlca.sqlcode)
+  {
+    swVdebug(0,"S0100: SELECT MAX(tran_id) FROM swt_his_tran_log error, sqlcode=%d",sqlca.sqlcode);
+    swQuit(-1);
+  }
+  if (ilTmp < 0)
+  {
+    swVdebug(2,"S0110: 没有找到记录,SELECT MAX(tran_id) FROM swt_his_tran_log");
+    goto CLRLOGFILE;
+  }
+  swVdebug(2,"S0120: SELECT MAX(tran_id)=[%ld]",llTran_id_max);
+
+  ilTmp = 0;
+  EXEC SQL SELECT MIN(tran_id) into :llTran_id_min:ilTmp FROM swt_his_tran_log
+    WHERE tran_end <= :llTran_current
+    	AND tran_id>=:llGrp_Tran_id_min
+    	AND tran_id<=:llGrp_Tran_id_max;
+  if(sqlca.sqlcode)
+  {
+    swVdebug(0,"S0130: SELECT MIN(tran_id) FROM swt_his_tran_log error, sqlcode=%d",sqlca.sqlcode);
+    swQuit(-1);
+  }
+  if (ilTmp < 0)
+  {
+    swVdebug(2,"S0140: 没有找到记录,SELECT MIN(tran_id) FROM swt_his_tran_log");
+    goto CLRLOGFILE;
+  }
+  swVdebug(2,"S0150: SELECT MIN(tran_id)=[%ld]",llTran_id_min);
+
+  llTran_id1 = llTran_id_min;
+  llTran_id2 = llTran_id_min + llPredelnum;
+  if (llTran_id2 > llTran_id_max) llTran_id2 = llTran_id_max;
+  
+  while (1)
+  {
+    /* 删除处理流水 */
+#ifdef DB_INFORMIX
+    EXEC SQL BEGIN WORK;
+#endif  
+    EXEC SQL DELETE FROM swt_his_proc_log WHERE tran_id >= :llTran_id1 AND tran_id <= :llTran_id2 AND proc_begin <= :llTran_current
+    	AND tran_id>=:llGrp_Tran_id_min
+    	AND tran_id<=:llGrp_Tran_id_max;
+    if(sqlca.sqlcode && sqlca.sqlcode != SQLNOTFOUND)
+    {
+      swVdebug(0,"S0160: DELETE FROM swt_his_proc_log error, sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      swQuit(-1);
+    }
+    llDeletenum[1] += sqlca.sqlerrd[2];
+    EXEC SQL COMMIT WORK;
+    swVdebug(2,"S0170: DELETE FROM swt_his_proc_log, tran_id=[%ld - %ld]",llTran_id1,llTran_id2);
+
+    /* 删除交易流水 */
+#ifdef DB_INFORMIX
+    EXEC SQL BEGIN WORK;
+#endif  
+    EXEC SQL DELETE FROM swt_his_tran_log WHERE tran_id >= :llTran_id1 AND tran_id <= :llTran_id2 AND tran_end <= :llTran_current
+    	AND tran_id>=:llGrp_Tran_id_min
+    	AND tran_id<=:llGrp_Tran_id_max;
+    if(sqlca.sqlcode && sqlca.sqlcode != SQLNOTFOUND)
+    {
+      swVdebug(0,"S0180: DELETE FROM swt_his_tran_log error, sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      swQuit(-1);
+    }
+    llDeletenum[0] += sqlca.sqlerrd[2];
+    EXEC SQL COMMIT WORK;
+    swVdebug(2,"S0190: DELETE FROM swt_his_tran_log, tran_id=[%ld - %ld]",llTran_id1,llTran_id2);
+
+    /* 删除saf流水 */
+#ifdef DB_INFORMIX
+    EXEC SQL BEGIN WORK;
+#endif
+    
+    EXEC SQL DELETE FROM swt_rev_saf
+      WHERE tran_id >= :llTran_id1 AND tran_id <= :llTran_id2
+      AND saf_begin <= :llTran_current AND saf_status='2'
+    	AND tran_id>=:llGrp_Tran_id_min
+    	AND tran_id<=:llGrp_Tran_id_max;
+    if(sqlca.sqlcode && sqlca.sqlcode != SQLNOTFOUND)
+    {
+      swVdebug(0,"S0200: DELETE FROM swt_rev_saf error, sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      swQuit(-1);
+    }
+    llDeletenum[2] += sqlca.sqlerrd[2];
+    EXEC SQL COMMIT WORK;
+    swVdebug(2,"S0210: DELETE FROM swt_rev_saf, tran_id=[%ld - %ld]",llTran_id1,llTran_id2);
+
+    if (llTran_id2 == llTran_id_max) break;
+    llTran_id1 = llTran_id2 + 1;
+    llTran_id2 += llPredelnum;
+    if (llTran_id2 > llTran_id_max) llTran_id2 = llTran_id_max;
+  }
+
+    /* 删除主动冲正日志表 */
+#ifdef TRANREVLOG
+#ifdef DB_INFORMIX
+    EXEC SQL BEGIN WORK;
+#endif  
+    EXEC SQL DELETE FROM swt_tranrev_log WHERE rev_time<=:llTran_current
+    	AND tran_id>=:llGrp_Tran_id_min
+    	AND tran_id<=:llGrp_Tran_id_max;
+    if(sqlca.sqlcode && sqlca.sqlcode != SQLNOTFOUND)
+    {
+      swVdebug(0,"S0225: DELETE FROM swt_tranrev_log error, sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      swQuit(-1);
+    }
+    EXEC SQL COMMIT WORK;
+    swVdebug(2,"S0225: DELETE FROM swt_tranrev_log");
+#endif
+
+    /* 删除报文头存取表 */
+#ifdef DB_INFORMIX
+    EXEC SQL BEGIN WORK;
+#endif  
+
+/*2010-5-8 彭程修改，原sql语句效率太低 改为minus句法 */
+EXEC SQL delete from swt_msghead where 
+tran_id in (select tran_id from swt_msghead 
+				minus select swt_his_tran_log.tran_id
+				 from swt_his_tran_log ,swt_msghead
+				 where swt_his_tran_log.tran_id=swt_msghead.tran_id);
+				 
+/*
+2010-5-8 8:35:58 彭程修改，原sql语句效率太低
+    EXEC SQL DELETE FROM swt_msghead WHERE tran_id NOT IN (SELECT tran_id FROM swt_his_tran_log);*/
+
+    if(sqlca.sqlcode && sqlca.sqlcode != SQLNOTFOUND)
+    {
+      swVdebug(0,"S0220: DELETE FROM swt_msghead error, sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      swQuit(-1);
+    }
+    llDeletenum[3] += sqlca.sqlerrd[2];
+    EXEC SQL COMMIT WORK;
+    swVdebug(2,"S0230: DELETE FROM swt_msghead");
+
+    /* 删除级联冲正表 */
+#ifdef DB_INFORMIX
+    EXEC SQL BEGIN WORK;
+#endif  
+    EXEC SQL DELETE FROM swt_other_rev WHERE cur_id NOT IN (SELECT tran_id FROM swt_his_tran_log);
+    if(sqlca.sqlcode && sqlca.sqlcode != SQLNOTFOUND)
+    {
+      swVdebug(0,"S0240: DELETE FROM swt_other_rev error, sqlcode=%d",sqlca.sqlcode);
+      EXEC SQL ROLLBACK WORK;
+      swQuit(-1);
+    }
+    llDeletenum[4] += sqlca.sqlerrd[2];
+    EXEC SQL COMMIT WORK;
+    swVdebug(2,"S0250: DELETE FROM swt_other_rev");
+
+CLRLOGFILE:
+
+  swVdebug(2,"S0260: 删除无用的交易日志文件...");
+  
+  /* 日志文件名列表 */
+  sprintf(alShcmd,"ls %s > /tmp/tranlog.f",getenv("SWITCH_LOG_PATH"));
+  system(alShcmd);
+  
+  fp=fopen("/tmp/tranlog.f", "r");
+  if(fp == NULL)
+  {
+    swVdebug(0,"S0270: [错误/系统调用] 打开文件[/tmp/tranlog.f]出错");
+    swQuit(-1);
+  }
+
+  while(1)
+  {
+    ilRc=fscanf(fp,"%s",fname);
+    if (ilRc==EOF) break;
+
+    sprintf(alFilename,"%s/%s",getenv("SWITCH_LOG_PATH"),fname);
+    stat(alFilename,&slFilestat);
+    if ((slFilestat.st_atime > llTran_current) || (slFilestat.st_mtime > llTran_current))
+      continue;
+
+    unlink(alFilename);
+    llDeletenum[5] += 1;
+    swVdebug(2,"S0290: 删除日志文件:%s",alFilename);
+  }  
+
+  ftime(&fb1);
+  llTime = 1000 * (fb1.time - fb.time) + (fb1.millitm - fb.millitm);
+  swVdebug(2,"S0300: [swBatch]运行时间=[%ldms]",llTime);
+  swVdebug(2,"S0310: 总共删除swt_his_tran_log记录条数=[%ld]",llDeletenum[0]);
+  swVdebug(2,"S0320: 总共删除swt_his_proc_log记录条数=[%ld]",llDeletenum[1]);
+  swVdebug(2,"S0330: 总共删除swt_rev_saf记录条数=[%ld]",llDeletenum[2]);
+  swVdebug(2,"S0340: 总共删除swt_msghead记录条数=[%ld]",llDeletenum[3]);
+  swVdebug(2,"S0350: 总共删除swt_other_rev记录条数=[%ld]",llDeletenum[4]);
+  swVdebug(2,"S0360: 总共删除交易日志文件个数=[%ld]",llDeletenum[5]);
+
+  swQuit(0);
+  return(0);
+} 
+
+char  *GetTimeStr(long lTime)
+{
+  struct tm *T;
+  static char	tt[15];
+
+  memset(tt, 0x00, 15);
+  T=localtime(&lTime);
+  sprintf(tt,"%04d%02d%02d%02d%02d%02d",T->tm_year+1900,T->tm_mon+1,T->tm_mday,
+               T->tm_hour,T->tm_min,T->tm_sec);
+  return(tt);
+}
+
+time_t AscLongTime(char *lTime)
+{
+  struct tm slTimes;
+  char str[3];
+  time_t t1;
+
+  swVdebug(4,"S0370: [函数调用] AscLongTime(%s)",lTime);
+  sprintf(str,"%4.4s",lTime);
+  slTimes.tm_year=atoi(str)-1900;
+  
+  if(slTimes.tm_year < 0 || slTimes.tm_year > 200)
+    return(FAIL);
+  
+
+  sprintf(str,"%2.2s",lTime+4);
+  slTimes.tm_mon=atoi(str);
+  if(slTimes.tm_mon < 1 || slTimes.tm_mon > 12)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+6);
+  slTimes.tm_mday=atoi(str);
+  if( slTimes.tm_mon == 1 || slTimes.tm_mon == 3 ||  slTimes.tm_mon == 5 ||
+      slTimes.tm_mon == 7 || slTimes.tm_mon == 8 || slTimes.tm_mon == 10 ||
+      slTimes.tm_mon == 12 )
+  {
+     if(slTimes.tm_mday < 1 || slTimes.tm_mday > 31)
+        return(FAIL);
+  }
+  else if( slTimes.tm_mon == 4 || slTimes.tm_mon == 6 || slTimes.tm_mon == 5 
+    || slTimes.tm_mon == 9 || slTimes.tm_mon == 11 )  
+  {
+     if(slTimes.tm_mday < 1 || slTimes.tm_mday > 30)
+        return(FAIL);
+  }
+  else 
+  {
+     if(slTimes.tm_mday < 1 || slTimes.tm_mday > 29)
+        return(FAIL);
+  }
+
+  slTimes.tm_mon=slTimes.tm_mon - 1;
+
+  sprintf(str,"%2.2s",lTime+8);
+  slTimes.tm_hour=atoi(str);
+  if(slTimes.tm_hour < 0 || slTimes.tm_hour > 23)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+10);
+  slTimes.tm_min=atoi(str);
+  if(slTimes.tm_min < 0 || slTimes.tm_min > 59)
+    return(FAIL);
+
+  sprintf(str,"%2.2s",lTime+12);
+  slTimes.tm_sec=atoi(str);
+  if(slTimes.tm_sec < 0 || slTimes.tm_sec > 59)
+    return(FAIL);
+
+  slTimes.tm_wday=0;
+  slTimes.tm_yday=0;
+  slTimes.tm_isdst=0;
+  
+  t1 = mktime(&slTimes);
+  swVdebug(4,"S0380: [函数返回] AscLongTime(),返回码=0");
+  return(t1);
+}
+
+void swQuit(int flag)
+{
+  swDbclose();
+  swVdebug(2,"S0390: 关闭数据库");
+  if(flag)
+  {
+    swVdebug(0,"S0400: [swBatch]异常终止!\n");
+    fprintf(stderr,"swBatch异常终止!\n");
+  }  
+  else
+  {
+    swVdebug(2,"S0410: [swBatch]正常结束!\n");
+    fprintf(stderr,"swBatch正常结束!\n");
+  }  
+  exit(flag);
+}

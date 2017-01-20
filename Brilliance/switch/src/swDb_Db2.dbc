@@ -1,0 +1,1003 @@
+/****************************************************************/
+/* 模块编号    ：swDb_Db2                                       */ 
+/* 模块名称    ：DB2数据库操作                                  */
+/* 作	 者    ：szy                                            */
+/* 建立日期    ：2001.3.14                                      */
+/* 最后修改日期：2001/10/25                                      */
+/* 模块用途    ：智能化路由模块                                 */
+/* 本模块中包含如下函数及功能说明：                             */
+/*			 （1）void main();                      */
+/*			 （2）void swQuit();                    */
+/*			 （3）int  swPresql();                  */
+/*			 （4）int  swExstr();                   */
+/*			  (5) int  init_da();			*/
+/*			  (6) int  alloc_host_vars()		*/
+/*			  (7) void free_da ()			*/
+/*			  (8) char * readCol ()			*/
+/****************************************************************/
+
+/* 数据库定义 */
+#include <sqlenv.h>
+#include <sqlcodes.h>
+#include <sqlda.h>
+EXEC SQL INCLUDE sqlca;
+EXEC SQL INCLUDE sqlda;
+
+/* switch定义 */
+#include "switch.h" 
+
+/* 常量定义 */
+#define   cSQLSELECT  'S'
+#define   cSQLUPDATE  'U'
+#define   cSQLINSERT  'I'
+#define   cSQLDELETE  'D'
+#define   cSQLOPEN    'O'
+#define   cSQLFETCH   'F'
+#define   cSQLCLOSE   'C'
+
+#ifndef DB_DB2
+#define DB_DB2
+#endif
+/* 变量定义 */
+
+/* 函数原型定义 */
+int init_da (struct sqlda **DAPointer, int DAsqln);
+int alloc_host_vars (struct sqlda *sqldaPointer);
+void free_da (struct sqlda *sqldaPointer);
+char * readCol(struct sqlda *sqldaPointer, short sd_columnIndex, char * buffer);
+
+void swQuit(int);
+int swPresql(char *,char *,char p[][101] ,short *,char *); 
+int swExstr(char *,char *);
+extern int _swExpN2T(char *aNstr,char *aTstr);
+
+int main(int argc,char *argv[])
+{
+    FILE    *fp;                 /* 文件指针 */
+    short   i,j,rownum;          /* 临时计数变量 */
+    short   ilRc;                /* 返回码 0-成功 非0-不成功 */
+    short   ilOrgqid=0;          /* 源发邮箱号 */
+    short   ilReadSize;          /* 读到的长度 */
+    short   ilPriority;          /* 信箱参数:优先级 */
+    short   ilClass;             /* 信箱参数:类别 */
+    short   ilType;              /* 信箱参数:类型 */
+    short   ilFldlen;            /* 域长 */
+    short   ilFldnum=0;          /* 域名 */
+    short   ilDb_id;             /* 数据库ID */
+    char    buffer[4096];
+    char    c;
+    char    alSqlcode[10 + 1];
+    char    alSqlnrows[10 + 1];
+    char    alFldname[iFLDNAMELEN + 1];
+    char    palSqlval[100][100 + 1];
+    char    alDb_name[21];       /* 数据库名 */
+    char    alUsrname[20];
+    char    alPassword[20];
+    char    cSqlflag;            /* SQL语句标识 */
+    char    alCur[21];           /* 游标名 */
+    char    alBuf[1024];
+    char    alFilename[31];      /* 文件名 */
+    char    alOffset[11];        
+    char    alSelectresult[1024]; 
+    char    *alPos;
+    long    llOffset; 
+    long    llTranid;            /* 交易流水号 */
+    struct  msgpack  slMsgpack;  /* 报文定义 */
+    struct sqlda *sqldaPointer;
+
+    /* 数据库变量定义 */
+    EXEC SQL BEGIN DECLARE SECTION;
+	char   alSqlstr[1024 + 1];
+	char   alSqltext[1024 + 1];
+	char   alSql[1024 + 1];
+    EXEC SQL END DECLARE SECTION;
+
+    /* 打印版本号 */
+    if (argc > 1)
+      _swVersion("swDb Version 4.3.0",argv[1]);
+
+    /* LICENSE */
+    if (_swLicense("swDb")) exit(FAIL);
+
+    if(argc < 3) {
+	fprintf(stderr,"使用方法: swDb_Db2 {-i ID -n database_name -d cgDebug}\n");
+	exit(-1);
+    }
+
+    /* 设置调试程序名称 */
+    strcpy(agDebugfile, "swDb_Db2.debug");
+
+    /* 通过命令行取得数据库ID，数据库名 */
+    while((c=getopt(argc,argv,"i:n:d:u:p:"))!=-1) {
+	switch( c ) {
+	    case 'i':
+		ilDb_id=atoi(optarg);
+	        break;
+	    case 'n':
+		strcpy(alDb_name,optarg);
+		break;
+	    case 'd':
+		cgDebug=atoi(optarg);
+		break;
+	    case 'u':
+	        strcpy(alUsrname,optarg);
+	        break;
+	    case 'p':
+	        strcpy(alPassword,optarg);
+	        break;
+	    default:
+		break;
+	}
+    }	/* end while */
+
+    /* 忽略SIGCLD、SIGINT、SIGQUIT、SIGHUP 信号 */
+    signal( SIGTERM , swQuit  );
+    signal( SIGINT  , SIG_IGN );
+    signal( SIGQUIT , SIG_IGN );
+    signal( SIGTSTP , SIG_IGN );
+    signal( SIGHUP  , SIG_IGN );
+
+    swVdebug(2,"S0010: 忽略SIGCLD、SIGINT、SIGQUIT、SIGHUP 信号");
+
+    /* 定位本地邮箱 */
+    if(qattach(iMBDBSQL)) {
+	swVdebug(0,"S0020: 初始化邮箱出错!");
+	exit(FAIL);
+    }
+    swVdebug(2,"S0030: 定位本地邮箱成功");
+
+    /* 打开数据库 */
+#ifdef DB_DB2
+    memset(alSqltext,0,sizeof(alSqltext));
+    strcpy(alSqltext,alDb_name);
+    EXEC SQL CONNECT TO :alSqltext;
+    if (sqlca.sqlcode) {
+      swVdebug(0,"S0040:数据库错误[%d]",sqlca.sqlcode);
+      exit(FAIL);
+    }
+    swVdebug(2,"S0050:连接数据库成功");
+
+    for( ; ; ) {
+	/* 从数据库邮箱读入Type为数据库ID的报文 */ 
+	ilReadSize = iMSGMAXLEN;
+	ilPriority = 0;
+	ilClass = 0;
+	ilType = ilDb_id;
+
+	if( ( ilRc = qread2( (char *)&slMsgpack, &ilReadSize, &ilOrgqid,
+	   &ilPriority,&ilClass,&ilType)) != SUCCESS ) {
+	    swVdebug(1,"S0060: 读邮箱出错");
+	    swMberror(ilRc, NULL);
+	    swQuit(FAIL);
+	}
+
+	/* 判断报文格式类型是否为内部格式报文 */ 
+	if ( slMsgpack.sMsghead.iMsgformat != iFMTIMF ) {
+	    /* 报文头.报文格式类型 不为 <FML内部报文格式> */
+	    swVdebug(1,"S0070: 报文格式类型不为FML报文格式");
+	    _swMsgsend( 303004, NULL );
+	    continue;
+	}
+	if (cgDebug >= 2) 
+	    swDebugfml((char *)&slMsgpack);
+
+	/* 将报文中IMF各域分解至FML变量预解池（调预解IMF格式函数）中 */
+	ilRc = swFmlunpack( slMsgpack.aMsgbody,slMsgpack.sMsghead.iBodylen, 
+		psgPreunpackbuf );
+	if ( ilRc == FAIL ) {
+	    /* 解IMF出错 */
+	    swVdebug(1,"S0080: 错误:FML报文解包出错!");
+	    _swMsgsend( 399001, NULL ); 
+	    continue;
+	}
+	swVdebug(2,"S0090: FML报文解包成功");
+
+	/* 从报文中取出 _SQLTEXT域  */
+	memset(alSqlstr,0x00,sizeof(alSqlstr));
+	ilRc = swFmlget(psgPreunpackbuf,"_SQLTEXT",&ilFldlen,alSqlstr);
+	if (ilRc) {
+	    swVdebug(1,"S0100: 取_SQLTEXT域出错");
+	    continue;
+	}
+	swVdebug(2,"S0110: 取_SQLTEXT域成功");
+
+	/* 解析SQL语句 */
+	ilRc = swPresql(alSqlstr,alSqltext,palSqlval,&ilFldnum,&cSqlflag);
+	if (ilRc) {
+	    swVdebug(1,"S0120: SQL语句不合法");
+	    continue;
+	}
+	swVdebug(2,"S0130: 解析SQL语句成功");
+
+	strcpy(alSqlcode,"0");
+	strcpy(alSqlnrows,"0");
+
+	switch( cSqlflag) {
+	    case cSQLSELECT:
+		/* 根据SQL语句动态定义游标 */
+		init_da(&sqldaPointer, 1);
+		EXEC SQL PREPARE dosql1 FROM :alSqltext;
+		if (sqlca.sqlcode != 0) {
+		    swVdebug(1,"S0140: 数据库错误[%d]:PREPARE dosql1 FROM %s",
+			sqlca.sqlcode,alSqltext);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+		EXEC SQL DESCRIBE dosql1 INTO :*sqldaPointer;
+		if ( (sqlca.sqlcode != 0) &&
+		    (SQLCODE != SQL_RC_W236) &&
+		    (SQLCODE != SQL_RC_W237) &&
+		    (SQLCODE != SQL_RC_W238) &&
+		    (SQLCODE != SQL_RC_W239)) 
+		{
+		    swVdebug(1,"S0150: 数据库错误[%d]:DESCRIBE dosql1",
+			sqlca.sqlcode);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+		init_da (&sqldaPointer, sqldaPointer->sqld);
+		EXEC SQL DESCRIBE dosql1 INTO :*sqldaPointer;
+		if (SQLCODE != 0) {
+		    swVdebug(1,"S0160: 数据库错误[%d]:DESCRIBE dosql1",
+			sqlca.sqlcode);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+		alloc_host_vars (sqldaPointer);
+		EXEC SQL DECLARE cur1 CURSOR FOR dosql1 ;
+		if (sqlca.sqlcode != 0) {
+		    swVdebug(1,"S0170: 定义游标错误[%d]",sqlca.sqlcode);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+
+		/* 打开游标 */
+		EXEC SQL OPEN cur1;
+		if (sqlca.sqlcode!=0) {
+		    swVdebug(1,"S0180: 打开游标错误[%d]",sqlca.sqlcode);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+		/* 读第一行标题 */
+		EXEC SQL FETCH cur1 USING DESCRIPTOR :*sqldaPointer;
+		rownum = 0;
+		/* 显示所有数据 */
+		while ( sqlca.sqlcode == 0 ) {
+		    EXEC SQL FETCH cur1 USING DESCRIPTOR :*sqldaPointer ;
+		    for ( i=0; i< sqldaPointer->sqld; i++) {
+			sprintf(alFldname,"%s#%c",palSqlval[i]+1,rownum+1);
+			strcpy(alBuf,readCol(sqldaPointer,i,buffer));
+			_swTrim(alBuf);
+			ilRc = swFmlset(alFldname,strlen(alBuf), \
+			    alBuf,psgPreunpackbuf);
+			if (ilRc) {
+			    sprintf(alSqlcode,"FML%d",ilRc);
+			    swVdebug(2,"S0190: FMLSET 报文出错");
+			    break;
+			}
+		    } /* end for */
+		    rownum++;
+		}  /* end while */
+
+		if ( rownum > 0 )
+		    strcpy(alSqlcode,"0");
+		else
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		/*关闭游标*/
+		EXEC SQL CLOSE cur1;
+		/* 释放SQLDA申请的空间 */
+		free_da(sqldaPointer);
+
+		swVdebug(2,"S0200: 执行SQL语句[%s]成功",alSqltext);
+		sprintf(alSqlnrows,"%d",rownum);
+		break;
+
+	    case cSQLUPDATE:
+	    case cSQLINSERT:
+	    case cSQLDELETE:
+	    /* 执行动态SQL语句 */
+		EXEC SQL PREPARE dosql2 FROM :alSqltext;
+		if (sqlca.sqlcode != 0) {
+		    swVdebug(1,"S0210: 数据库错[%d] : PREPARE dosql2 FROM %s",
+			sqlca.sqlcode,alSqltext);
+		sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		break;
+	        }
+
+		EXEC SQL EXECUTE dosql2;
+		if (sqlca.sqlcode != 0) {
+		    swVdebug(1,"S0220: 数据库错误[%d] : EXEC SQL EXECUTE dosql2 %s", sqlca.sqlcode,alSqltext);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    EXEC SQL ROLLBACK WORK;
+		    break;
+		}
+		sprintf(alSqlnrows,"%ld",sqlca.sqlerrd[2]);
+		EXEC SQL COMMIT WORK;
+
+		swVdebug(2,"S0230:  执行SQL语句[%s]成功",alSqltext);
+		break;
+
+	    case cSQLOPEN:
+		/* 定义游标 */
+		alPos = strstr(alSqltext,"CURSOR");
+		if (!alPos) {
+		    swVdebug(1,"S0240: OPEN语句定义出错");
+		    strcpy(alSqlcode,"-1");
+		}
+		strncpy(alCur,alSqltext + 5,alPos -alSqltext -6);
+		alPos = strstr(alSqltext,"SELECT ");
+		if ( !alPos ) {
+		    swVdebug(1,"S0250: OPEN语句定义出错");
+		    strcpy(alSqlcode,"-1");
+		}
+		strcpy(alSql,alPos);
+		_swTrim(alSql);
+
+		/* 根据SQL语句动态定义游标 */
+		init_da(&sqldaPointer, 1);
+		EXEC SQL PREPARE dosql3 FROM :alSql;
+		if (sqlca.sqlcode!=0) {
+		    swVdebug(1,"S0260: 定义SELETE语句错误[%d] : %s",
+			sqlca.sqlcode,alSql);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+		EXEC SQL DESCRIBE dosql3 INTO :*sqldaPointer;
+                if ( (sqlca.sqlcode != 0) &&
+                    (SQLCODE != SQL_RC_W236) &&
+                    (SQLCODE != SQL_RC_W237) &&
+                    (SQLCODE != SQL_RC_W238) &&
+                    (SQLCODE != SQL_RC_W239))
+                {
+                    swVdebug(1,"S0270: 数据库错误[%d]:DESCRIBE dosql1",
+                        sqlca.sqlcode);
+                    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+                    break;
+                }
+                init_da (&sqldaPointer, sqldaPointer->sqld);
+                EXEC SQL DESCRIBE dosql3 INTO :*sqldaPointer;
+                if (SQLCODE != 0) {
+                    swVdebug(1,"S0280: 数据库错误[%d]:DESCRIBE dosql1",
+                        sqlca.sqlcode);
+                    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+                    break;
+                }
+                alloc_host_vars (sqldaPointer);
+		EXEC SQL DECLARE alCur CURSOR FOR dosql3 ;
+		if (sqlca.sqlcode != 0) {
+		    swVdebug(1,"S0290: 定义游标错误[%d]",sqlca.sqlcode);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+       
+		/* 打开游标 */
+		EXEC SQL OPEN alCur;
+		if (sqlca.sqlcode != 0) {
+		    swVdebug(1,"S0300: 打开游标错误[%d]",sqlca.sqlcode);
+		    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+		    break;
+		}
+
+		/* 创建名为游标名.交易流水号的临时文件 */
+		llTranid=slMsgpack.sMsghead.lTranid;
+		sprintf(alFilename,"%s/tmp/%s.%ld",getenv("SWITCH_DIR"),
+			alCur,llTranid);
+		if ((fp = fopen(alFilename,"w")) == NULL) {
+		    swVdebug(1,"S0310: 创建临时文件出错");
+		    strcpy(alSqlcode,"-1");
+		    break;
+		}
+		swVdebug(2,"S0320: 创建临时文件[%s]",alFilename);
+
+		/* 读第一行标题 */
+		EXEC SQL FETCH alCur USING DESCRIPTOR :*sqldaPointer;
+		/* write all date to the tempfile */
+		while ( sqlca.sqlcode == 0 ) {
+                    EXEC SQL FETCH alCur USING DESCRIPTOR :*sqldaPointer ;
+                    for ( i=0; i< sqldaPointer->sqld; i++) {
+                        strcpy(alBuf,readCol(sqldaPointer,i,buffer));
+                        _swTrim(alBuf);
+			strcat(alBuf,"|");
+			fwrite(alBuf,sizeof(char),strlen(alBuf),fp);
+                    }		/* end for */
+                    rownum++;
+		    fputc('\n',fp);
+                }		/* end while */
+		fclose(fp);
+		swVdebug(2,"S0330: 将所有记录写入文件[%s]",alFilename);
+
+	        /* 关闭游标 */
+	        EXEC SQL CLOSE alCur;
+		free_da(sqldaPointer);
+
+	        /* 初始化 _SQLOFFSET域为0 */
+	       	sprintf(alOffset,"0");
+	        ilRc = swFmlset("_SQLOFFSET",strlen(alOffset),
+			alOffset,psgPreunpackbuf);
+	        if (ilRc) {
+	            swVdebug(1,"S0340: 置[_SQLOFFSET]域出错");
+	            strcpy(alSqlcode,"-1");
+	        }
+	        sprintf(alSqlnrows,"%d",rownum);
+	        break;
+
+	    case cSQLFETCH:
+		/* 打开名为游标名.交易流水号的临时文件 */
+		alPos = strstr(alSqltext,"INTO");
+		if ( !alPos ) {
+		    swVdebug(1,"S0350: OPEN语句定义出错");
+		    strcpy(alSqlcode,"-1");
+		}
+		strncpy(alCur,alSqltext + 6,alPos -alSqltext -7);
+		llTranid=slMsgpack.sMsghead.lTranid;
+		sprintf(alFilename,"%s/tmp/%s.%ld",getenv("SWITCH_DIR"),
+			alCur,llTranid);
+		if ((fp = fopen(alFilename,"r")) == NULL) {
+		    swVdebug(1,"S0360:打开文件出错[%d]",fp);
+		    strcpy(alSqlcode,"-1");
+		    break;
+		}
+		swVdebug(2,"S0370: 打开临时文件[%s]",alFilename);
+       
+		/* 取文件偏移量 */
+		memset(alOffset,0x00,sizeof(alOffset));
+		ilRc=swFmlget(psgPreunpackbuf,"_SQLOFFSET",&ilFldlen,alOffset);
+		if (ilRc) {
+		    swVdebug(1,"S0380: 取_SQLOFFSET域出错");
+		    strcpy(alSqlcode,"-1");
+		    break;
+		}
+		llOffset = atol(alOffset);
+		ilRc =fseek(fp,llOffset,SEEK_SET);
+		if(ilRc < 0) {
+		    swVdebug(1,"S0390: 操作文件出错[%d]",ilRc);
+		    strcpy(alSqlcode,"-1");
+		    break;
+		}
+
+	        /* 从文件中取出一条数据库记录 */
+	        memset(alBuf,0x00,sizeof(alBuf));
+	        for(i=0; ;i++) {
+	            alBuf[i] = fgetc(fp);
+	            if(alBuf[i] =='\n' || alBuf[i] ==EOF)
+	            break;
+	        }   
+	        /* 关闭临时文件 */
+	        fclose(fp);
+	        if ( i == 0) {
+	            swVdebug(1,"S0400:FETCH 记录为空");
+	            sprintf(alSqlcode,"%d",SQLNOTFOUND);
+	            break;
+	        }
+	        strcpy(alSqlnrows,"1");
+
+	        /* 将记录中的所有字段置入报文中 */
+	        for (j = 0;j < ilFldnum;j++) {
+	            _swGetOneField(alBuf,j+1,alSelectresult,'|'); 
+	            strcpy(alFldname,palSqlval[j]);
+	            ilRc = swFmlset(alFldname,strlen(alSelectresult),
+	                alSelectresult,psgPreunpackbuf);
+	            if (ilRc) {
+			sprintf(alSqlcode,"FML%d",ilRc);
+			break;
+	            }
+		}
+	        swVdebug(2,"S0410: 将记录置入报文成功"); 
+
+	        /* 重置 _SQLOFFSET域 */
+	        llOffset = llOffset + i + 1;
+	        sprintf(alOffset,"%ld",llOffset);
+	        ilRc = swFmlset("_SQLOFFSET",strlen(alOffset),\
+			alOffset,psgPreunpackbuf);
+	        if (ilRc) {
+	          swVdebug(1,"S0420: 置[_SQLOFFSET]域出错");
+	          strcpy(alSqlcode,"-1");
+	        }
+	        break;
+
+	    case cSQLCLOSE:
+	        /* 删除名为游标.交易流水号的临时文件 */
+	        strncpy(alCur,alSqltext + 6,strlen(alSqltext) - 6); 
+	        llTranid=slMsgpack.sMsghead.lTranid;
+	        sprintf(alFilename,"%s/tmp/%s.%ld",
+			getenv("SWITCH_DIR"),alCur,llTranid);
+		unlink(alFilename);
+	        swVdebug(2,"S0430: 删除临时文件[%s]",alFilename);
+	        break;
+
+	    default:
+	        swVdebug(1,"S0440: SQL语句[%s]不合法",alSqltext);
+	        strcpy(alSqlcode,"-1");
+	        break;
+	} /* end of switch */
+
+	/* 置 _SQLCODE、_SQLNROWS域 */
+	if ( rownum > 0 )
+	    strcpy(alSqlcode,"0");
+	else
+	    sprintf(alSqlcode,"%ld",sqlca.sqlcode);
+	ilRc = swFmlset("_SQLCODE",strlen(alSqlcode),alSqlcode,psgPreunpackbuf);
+	if (ilRc) {
+	    swVdebug(1,"S0450: 置[_SQLCODE]域出错");
+	    continue;
+	}
+	ilRc = swFmlset("_SQLNROWS",strlen(alSqlnrows),
+		alSqlnrows,psgPreunpackbuf);
+	if (ilRc) {
+	    swVdebug(1,"S0460: 置[_SQLNROWS]域出错");
+	    continue;
+	}
+
+        /* 报文打包后发送到报文源发邮箱 */
+        ilRc = swFmlpack(psgPreunpackbuf,slMsgpack.aMsgbody,
+              &(slMsgpack.sMsghead.iBodylen));
+        if (ilRc) {
+          swVdebug(1,"S0470: 生成FML报文失败");
+          continue;
+        }
+        ilRc = qwrite2( (char *)&slMsgpack, slMsgpack.sMsghead.iBodylen+iMSGHEADLEN, ilOrgqid,ilPriority,ilClass,ilType );
+	if (ilRc) {
+	    swVdebug(2,"S0480: 发送报文至源发邮箱出错");
+	    swMberror(ilRc, "错误:qwrite至源发邮箱出错!");
+	    swQuit(FAIL);
+	}
+	swVdebug(1,"S0490: 将报文发送回源邮箱");
+	if (cgDebug >=2)	swDebugfml((char *)&slMsgpack);
+    }
+#endif
+}
+
+void swQuit(int sig)
+{
+    signal(SIGTERM,SIG_IGN);
+    swDbclose();
+    swVdebug(0,"S0500: [swDb_Db2]已经停止!");
+    qdetach();
+    exit(sig);
+}
+
+int swPresql(char *aSqlstr,char *aSqltext,char paSqlval[100][100 + 1],short *iFldnum,char *alSqlflag)
+{
+  char *alPos1;
+  char *alPos2;
+  char alSqlval[1024 + 1];
+  char alSqlstr[1024 + 1];
+  /* modified by wangpan */
+  char alFldexpress[2*iFLDVALUELEN + 1],alTmpexp[iFLDVALUELEN+1];
+  /* end modifief */
+  char alFldvalue[1024 + 1];
+  char alBuf[1024 + 1];
+  short ilFldlen,ilRc;
+  short i = 0;
+
+  strcpy(alSqlstr,aSqlstr);
+  for(;;) {
+    /* 去变量定义符，取SQL语句 */
+    alPos1 = strrchr(alSqlstr,'{');
+    if (!alPos1) 
+      break;
+    alPos2 = strchr(alPos1,'}');
+    if (!alPos2)  
+      break;
+    memset(alFldexpress,0x00,sizeof(alFldexpress));
+    /* strncpy(alFldexpress,alPos1 + 1,alPos2 - alPos1 - 1); */
+    /* delete   by wangpan 2001/11/29                        */
+    /* modified by wangpan 2001/11/29                        */
+    memset(alTmpexp,0x00,sizeof(alTmpexp));
+    strncpy(alTmpexp,alPos1 + 1,alPos2 - alPos1 - 1);
+    ilRc = _swExpN2T(alTmpexp,alFldexpress);
+    if(ilRc!=0) return(ilRc);
+    /* end modify by wangpan 2001/11/29                      */
+    
+    ilRc = _swExpress(alFldexpress,alFldvalue,&ilFldlen);
+    if (ilRc) 
+    {
+      swVdebug(3,"S0510: 计算表达式[%s]出错",alFldexpress);
+      return(ilRc);
+    }
+    strcpy(alBuf,alPos2 + 1);
+    strncpy(alPos1,alFldvalue,ilFldlen);
+    strcpy(alPos1 + ilFldlen,alBuf);
+  }
+  ilRc = swExstr(alSqlstr,alSqlflag);
+  if (ilRc)
+  {
+    swVdebug(3,"S0520: SQL语句[%s]不合法",alSqlstr);
+    return(ilRc);
+  }
+
+  switch (alSqlflag[0]) {
+    case cSQLSELECT:
+      alPos1 = strstr(alSqlstr,"INTO ");
+      if (!alPos1)
+        return (FAIL);
+      if ( alSqlflag[0] == cSQLSELECT) {
+        alPos2 = strstr(alPos1,"FROM ");
+        if (!alPos1)
+          return (FAIL);
+        strcpy(aSqltext,alSqlstr);
+        strcpy(aSqltext+(alPos1-alSqlstr),alPos2); 
+        memset(alSqlval,0x00,sizeof(alSqlval));
+        strncpy(alSqlval,alPos1 + 5 ,alPos2 - alPos1 - 5);
+        _swTrim(aSqltext);
+        _swTrim(alSqlval);
+        alPos1 = alSqlval;
+      }
+      for (;;) {
+        alPos2 = strchr(alPos1,',');
+        if (!alPos2) 
+          break;
+        memset(paSqlval[i],0x00,100 + 1);
+        strncpy(paSqlval[i],alPos1,alPos2 - alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+        alPos1 = alPos2 + 1;
+      }
+      if (strlen(alPos1) >= 0) {
+        memset(paSqlval[i],0x00,100 + 1);
+        strcpy(paSqlval[i],alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+      }
+      *iFldnum = i ;
+      break;
+
+    case cSQLOPEN:
+      alPos1 = strstr(alSqlstr,"SELECT ");
+      if (!alPos1)
+        return (FAIL);
+      alPos1 = alPos1 + 8;
+      alPos2 = strstr(alPos1,"FROM ");
+      if (!alPos2)
+        return (FAIL);
+      for (;;) {
+        alPos2 = strchr(alPos1,',');
+        if (!alPos2) 
+          break;
+        i++;
+        alPos1 = alPos2 + 1;
+      }
+      if (strlen(alPos1) >= 0)
+        i = i + 1;
+      *iFldnum = i ;
+      strcpy(aSqltext,alSqlstr);
+      break;
+
+    case cSQLFETCH:
+      alPos1 = strstr(alSqlstr,"INTO ");
+      if (!alPos1)
+        return(FAIL);
+      alPos1 = alPos1 + 5 ;
+      for (;;) {
+        alPos2 = strchr(alPos1,',');
+        if (!alPos2) 
+          break;
+        memset(paSqlval[i],0x00,100 + 1);
+        strncpy(paSqlval[i],alPos1,alPos2 - alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+        alPos1 = alPos2 + 1;
+      }
+      if (strlen(alPos1) >= 0) {
+        memset(paSqlval[i],0x00,100 + 1);
+        strcpy(paSqlval[i],alPos1);
+        _swTrim(paSqlval[i]);
+        i++;
+      }
+      *iFldnum = i ;
+      strcpy(aSqltext,alSqlstr);
+      break;
+
+    default:
+      _swTrim(alSqlstr);
+      strcpy(aSqltext,alSqlstr);
+      break;
+  }
+  return(SUCCESS);
+}
+
+int swExstr(char *alStr,char *cFlag)
+{
+   char *alPos;
+   int i;
+
+   /* 将SQL语句关键字小写转换成大写 */
+   alPos = strstr(alStr,"select"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"update"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"insert"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"delete"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"from"); 
+   if (alPos) {
+     for( i=0;i<4;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"into"); 
+   if (alPos) {
+     for( i=0;i<4;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"where"); 
+   if (alPos) {
+     for( i=0;i<5;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"open"); 
+   if (alPos) {
+     for( i=0;i<4;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"declare"); 
+   if (alPos) {
+     for( i=0;i<7;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"cursor"); 
+   if (alPos) {
+     for( i=0;i<6;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"for"); 
+   if (alPos) {
+     for( i=0;i<3;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"fetch"); 
+   if (alPos) {
+     for( i=0;i<5;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+   alPos = strstr(alStr,"close"); 
+   if (alPos) {
+     for( i=0;i<5;i++)
+       alPos[i] = alPos[i] - 32;
+   }
+
+  /* 取SQL语句标识 */
+  if( !strncmp(alStr,"SELECT ",7) ) {
+    cFlag[0]=cSQLSELECT;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"UPDATE ",7) ) {
+    cFlag[0] = cSQLUPDATE;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"INSERT ",7) ) {
+    cFlag[0]=cSQLINSERT;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"DELETE ",7) ) {
+    cFlag[0]=cSQLDELETE;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"OPEN ",5) ) {
+    cFlag[0]=cSQLOPEN;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"FETCH " ,6) ) {
+    cFlag[0]=cSQLFETCH;
+    return(SUCCESS);
+  }
+  if( !strncmp(alStr,"CLOSE " ,6) ) {
+    cFlag[0]=cSQLCLOSE;
+    return(SUCCESS);
+  }
+  else
+     return(FAIL);
+}
+
+/*
+ * PROCEDURE : init_da
+ * 为SQLDA分配空间。其中SQLDASIZE的作用，是计算SQLDA的大小.
+ * 返回-1，表示无法分配空间。
+ */
+int init_da (struct sqlda **DAPointer, int DAsqln)
+{
+    *DAPointer = (struct sqlda *) malloc (SQLDASIZE(DAsqln));
+    if (*DAPointer == NULL) 
+	return (-1);
+    memset (*DAPointer, '\0', SQLDASIZE(DAsqln));
+    strncpy((*DAPointer)->sqldaid, "SQLDA   ", sizeof ((*DAPointer)->sqldaid));
+    (*DAPointer)->sqldabc = (long)SQLDASIZE(DAsqln);
+    (*DAPointer)->sqln = DAsqln;
+    (*DAPointer)->sqld = 0;
+    return 0;
+}
+
+/*
+ * FUNCTION : alloc_host_vars
+ * 为sqlvar结构申请空间。返回-1表示申请失败。
+ */
+int alloc_host_vars (struct sqlda *sqldaPointer)
+{
+    short idx;
+    unsigned int memsize =0;
+    int precision  =0;
+
+    for (idx = 0; idx < sqldaPointer->sqld; idx++) {
+	switch (sqldaPointer->sqlvar[idx].sqltype ) {
+	    case SQL_TYP_VARCHAR:
+	    case SQL_TYP_NVARCHAR:
+	    case SQL_TYP_LONG:
+	    case SQL_TYP_NLONG:
+	    case SQL_TYP_DATE:
+ 	    case SQL_TYP_NDATE:
+	    case SQL_TYP_TIME:
+	    case SQL_TYP_NTIME:
+	    case SQL_TYP_STAMP:
+	    case SQL_TYP_NSTAMP:
+		sqldaPointer->sqlvar[idx].sqltype = SQL_TYP_NCSTR;
+		sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+		malloc ((sqldaPointer->sqlvar[idx].sqllen));
+		memsize = (sqldaPointer->sqlvar[idx].sqllen);
+		break;
+	    case SQL_TYP_DECIMAL:
+	    case SQL_TYP_NDECIMAL:
+		precision = ((char *)&(sqldaPointer->sqlvar[idx].sqllen))[0];
+		sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+		malloc ((precision + 2) /2);
+		memsize = (precision +2) /2;
+		break;
+	    default:
+		sqldaPointer->sqlvar[idx].sqldata = (char *SQL_POINTER)
+		malloc (sqldaPointer->sqlvar[idx].sqllen);
+		memsize = sqldaPointer->sqlvar[idx].sqllen;
+		break;
+	} /* end of switch */
+	if (sqldaPointer->sqlvar[idx].sqldata == NULL) {
+	    return (-1);
+	} else {
+	    memset (sqldaPointer->sqlvar[idx].sqldata,'\0',memsize);
+	} /* endif */
+	/*为sqlind申请空间*/
+	if ( sqldaPointer->sqlvar[idx].sqltype & 1 ) {
+	    /* Allocate storage for short int */
+	    sqldaPointer->sqlvar[idx].sqlind = (short *)malloc(sizeof(short));
+	    /* Detect memory allocation error */
+	    if ( sqldaPointer->sqlvar[idx].sqlind == NULL )
+		return(-1) ;
+	    else {
+		/* initialize memory to zero */
+		memset(sqldaPointer->sqlvar[idx].sqldata,'\0',sizeof(short));
+	    } /* endif */
+	} /* endif */
+    } /* endfor */
+    return 0;
+}
+
+/*
+ * FUNCTION : free_da
+ * 释放SQLDA 申请的空间。
+ */
+void free_da (struct sqlda *sqldaPointer)
+{
+    short idx;
+    for (idx = 0; idx < sqldaPointer->sqld; idx++) {
+	free (sqldaPointer->sqlvar[idx].sqldata);
+	if (sqldaPointer->sqlvar[idx].sqltype & 1) {
+	    free (sqldaPointer->sqlvar[idx].sqlind);
+	}
+    } /* endfor */
+    free (sqldaPointer);
+}
+
+/*
+ * PROCEDURE : readCol
+ * 返回一行数据,类型转换
+ */
+char * readCol (struct sqlda *sqldaPointer, short sqlvarIndex, char * buffer)
+{
+    short idx, ind ;            /* Array idx variables */
+    /* Variables for decoding packed decimal data */
+    short bottom, point ;
+    unsigned short top, precision, scale;
+    short pos;
+    short collen;
+    char *dataptr;
+      
+    /* 检查是否为null */
+    if ( sqldaPointer->sqlvar[sqlvarIndex].sqltype & 1 &&
+	*(sqldaPointer->sqlvar[sqlvarIndex].sqlind) < 0 ) 
+    { buffer[0] = 0;
+	return buffer;
+    }
+    dataptr = (char *) sqldaPointer->sqlvar[ sqlvarIndex ].sqldata;
+    collen = sqldaPointer->sqlvar[ sqlvarIndex ].sqllen;
+  
+    switch ( sqldaPointer->sqlvar[ sqlvarIndex ].sqltype ) {
+	case SQL_TYP_INTEGER:   /* long */
+	case SQL_TYP_NINTEGER:  /* long with null indicator */
+	    sprintf(buffer, "%ld", * ( long *) dataptr ) ;
+	    break ;
+	case SQL_TYP_SMALL:     /* short */
+	case SQL_TYP_NSMALL:    /* short with null indicator */
+	    sprintf(buffer, "%d", * ( short *) dataptr ) ;
+	    break ;
+	case SQL_TYP_DECIMAL:   /* decimal */
+	case SQL_TYP_NDECIMAL:  /* decimal with null indicator */
+	    /* Determine the scale and precision */
+	    precision = ((char *)&(collen))[0];
+	    scale = ((char *)&(collen))[1];
+
+	    /* 计算精度 */
+	    if ((precision %2) == 0) precision += 1;
+
+	    /* Calculate the total number of bytes */
+	    idx = ( short ) ( precision + 2 ) / 2 ;
+	    point = precision - scale ;
+
+	    pos = 0;
+	    /* Determine the sign */
+	    bottom = *(dataptr + idx -1) & 0x000F ;   /* sign */
+	    if ( (bottom == 0x000D) || (bottom == 0x000B) ) {
+		buffer[pos++]='-';
+	    } 
+	    /* Decode and print the decimal number */
+	    for (pos=0, ind=0; ind < idx; ind++) {
+		top = *(dataptr + ind) & 0x00F0 ;
+		top = (top >> 4 ) ;
+		bottom = *(dataptr + ind) & 0x000F ;
+		if ( point-- == 0 ) buffer[pos++]='.' ;
+		buffer[pos++]='0' + top ;
+                /* 忽略最后一位(符号位) */
+		if ( ind < idx - 1 ) {	/* sign half byte ? */
+		    if ( point-- == 0 ) buffer[pos++] = '.';
+		    buffer[pos++] = '0'+ bottom;
+		}
+	    }
+	    buffer[pos] = 0;
+	    break ;
+	case SQL_TYP_FLOAT:  /* double */
+	case SQL_TYP_NFLOAT: /* double with null indicator */
+	    sprintf(buffer, "%e", * (double *) dataptr) ;
+	    break ;
+	case SQL_TYP_CHAR:  /* fixed length character string */
+	case SQL_TYP_NCHAR: /* fixed length character string with null
+			     indicator */
+	    strncpy(buffer, dataptr, collen);
+	    buffer[collen] = 0;
+	    collen--;
+	    while ((collen >=0) && (buffer[collen] == ' '))
+		buffer[collen--] = 0;
+	    break;
+	case SQL_TYP_LSTR:  /* varying length character string, 1-byte length */
+	case SQL_TYP_NLSTR: /* varying length character string, 1-byte length,
+			     with null indicator */
+
+	    /*
+	     * Initialize blen to the value the length field
+	     * in the varchar data structure.
+	     */
+
+	    collen = *dataptr;
+	    /* Advance the data pointer beyond the length field */
+	    dataptr+=sizeof(char);
+	    strncpy(buffer, dataptr, collen);
+	    buffer[collen] = 0;
+	    break ;
+	case SQL_TYP_CSTR: /* null terminated varying length character string */
+	case SQL_TYP_NCSTR: /* null terminate varying length character
+				string with null indicator */
+	    strcpy(buffer,  dataptr);
+	    break ;
+	default:
+	    buffer[0] = 0;
+    }
+
+    return buffer;
+}

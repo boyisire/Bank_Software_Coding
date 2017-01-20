@@ -1,0 +1,15 @@
+ROUTEDESC=我的负债交易                               
+[ROUTE]                                              
+10 IF GT(LEN(FML(PTERRFLAG)),0) THEN GOTO 400        
+20 IF SEQ(PTPORTGET(119,1),0) THEN GOTO 800          
+30 CALL 119 WITH REVMODE 1                           
+40 IF NOT(SEQ(retcode,00)) THEN GOTO 400             
+50 IF SEQ(PTPORTGET(112,1),0) THEN GOTO 800          
+60 CALL 112  WITH REVMODE 1                          
+#65 SET trancode=310030080                           
+70 IF SEQ(PTPORTGET(112,1),0) THEN GOTO 800          
+80 CALL 112  WITH REVMODE 1                          
+400 SEND MSGHEAD(iBegin_q_id) WITH END               
+800 SET retcode = 20009997                           
+810 SEND MSGHEAD(iBegin_q_id) WITH END, GROUP 23999  
+

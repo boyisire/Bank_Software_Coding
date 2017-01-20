@@ -1,0 +1,7 @@
+ROUTEDESC=电视银行支付系统发往清算系统
+[ROUTE]
+#发送至清算系统
+10 CALL 286 WITH REVMODE 1	
+
+#返回电视银行支付
+100 SEND 232 WITH END

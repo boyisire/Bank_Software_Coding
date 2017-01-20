@@ -1,0 +1,7 @@
+[Brilliance Switch Platform 4.3.0]
+LICENSEE=ÓÊ´¢ÍøÒø
+SERIAL=20011218-4.3-1001
+ORDERLIST=swCtrl;swRouter;swFormat;swMonlog;swMonrev;swMonsaf;swDb;swFile;swBatch;swPrep;swFront;swComm;swTask;swSysmon;swSyscom;swSyscon;
+USERS=100
+DATE=20211218
+SIGNATURE=1#1"09!5-3?0-!!sCwrt*}wsoCtebes:Fgro`m+uwsMlwos:Mf~ec+wwsMrnfas:Dg;swsyFels:Bgtqics:Pwec;awsrG~+uwsCm|s:Twcp;kwsiS}c~s:Sgsxc+}wsiSsc~1+!!1#""09!

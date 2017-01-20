@@ -1,0 +1,57 @@
+PGSQLPATH=/usr/local/pgsql9.4
+ORA_CLIENT_LIB=shared
+DBLIBS=$(PGSQLPATH)/lib -lecpg
+INCLUDE=-I$(SWITCH_DIR)/inc -I$(PGSQLPATH)/include -I$(BMQ_PATH)/inc -I$(HOME)/pl/inc -I$(HOME)/pl/src/public -I$(HOME)/pl/src/hashindex -I$(HOME)/pl/src/shm -I$(HOME)/pl/src/libxml2/include -I$(HOME)/pl/src/libxml2/include/libxml -I$(HOME)/bs/inc -I$(HOME)/front/inc -I$(HOME)/bs/inc -I$(HOME)/tb/inc
+
+DEBUGFLAGS=-DDEBUG
+CFLAGS= -g -c $(DEBUGFLAGS)
+SHAREDFLAGS=$(CFLAGS) -fPIC -shared
+BITFLAG=-m64
+
+THIRDLIB_DIR=$(HOME)/thirdlib
+TIBEMSLIBPATH=$(THIRDLIB_DIR)/tibco_ems
+TIBEMSLIB=$(TIBEMSLIBPATH)/lib
+TIBEMSINC=-I$(TIBEMSLIBPATH)/inc
+OT_DBG_FLAGS = -g
+
+TLIBS=-lpthread
+TIBEMS_LIB64=-ltibems64 -ltibemslookup64
+TIBEMSADMIN_LIB64=-ltibemsadmin64
+TIBEMS_SSL_LIB64=-lssl -lcrypto
+TIBEMS_LDAP_LIB64=-lldap -llber
+TIBEMS_XML_LIB64=-lxml2
+TIBEMS_ZLIB64=-lz
+
+EMSLIBS= -L$(TIBEMSLIB)/64 -L$(TIBEMSLIB) $(TIBEMS_LIB64) $(TIBEMSADMIN_LIB64) $(TIBEMS_LDAP_LIB64) $(TIBEMS_XML_LIB64) $(TIBEMS_SSL_LIB64) $(TIBEMS_ZLIB64) $(TLIBS)
+
+
+PLPATH=$(HOME)/pl
+SHMAPPLIBS=-L$(PLPATH)/lib -lm -lshmpub -lbswconndb  -lbswPublic
+APIHASHLIBS=-L$(PLPATH)/lib -lhashindex
+SYSDBLIBS=-L$(PGSQLPATH)/lib -lecpg
+PLSHMLIBS=-L$(PLPATH)/lib  -lshmpub
+
+
+SYSLIBS=-lpthread -lcrypto
+BMQLIB=-L$(BMQ_PATH)/lib -lbmqapi
+APPLIBS=-L$(SWITCH_DIR)/lib -lusrfun -lmqapi -lswapi -lxml2 -lswapi -lusrfun
+APILIBS=-L$(SWITCH_DIR)/lib -lswapi 
+PLLIBS=-L$(HOME)/pl/lib -lPlSec -lPlPub -lPlCom $(SHMAPPLIBS) $(APIHASHLIBS)
+PLBIN=$(HOME)/pl/bin
+TUXAPPLIBS=-L$(SWITCH_DIR)/lib -lusrfuntuxpb -lmqapi -lswapi -lxml2
+
+
+SRC=$(SWITCH_DIR)/src
+BND=$(SWITCH_DIR)/bnd
+OBJ=$(SWITCH_DIR)/obj
+LIB=$(SWITCH_DIR)/lib
+EXE=$(SWITCH_DIR)/bin
+ETC=$(SWITCH_DIR)/etc
+TMP=$(SWITCH_DIR)/tmp
+
+AR=ar
+
+ESQL=ecpg
+CC=cc
+
+.SUFFIXES:   .sqc .dbc .pc .c .o

@@ -1,0 +1,3 @@
+ROUTEDESC=短信系统管理类交易
+[ROUTE]
+10 SEND MSGHEAD(iBegin_q_id) WITH END
